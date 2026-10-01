@@ -1,19 +1,25 @@
 mod buy_and_hold;
+mod ma_cross;
 use crate::engine::{BtContext, Order};
 pub use buy_and_hold::{BuyAndHold, BuyAndHoldConfig};
 use clap::Subcommand;
+pub use ma_cross::{MaCross, MaCrossConfig};
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum StrategyConfig {
     /// 首次可成交时买入并持有至回测结束
     #[command(alias = "buy_and_hold")]
     BuyAndHold(BuyAndHoldConfig),
+    /// 短期均线上穿长期均线买入，下穿时清仓
+    #[command(alias = "ma_cross")]
+    MaCross(MaCrossConfig),
 }
 
 impl StrategyConfig {
     pub fn build(self) -> Box<dyn Strategy> {
         match self {
             Self::BuyAndHold(config) => Box::new(BuyAndHold::new(config)),
+            Self::MaCross(config) => Box::new(MaCross::new(config)),
         }
     }
 }

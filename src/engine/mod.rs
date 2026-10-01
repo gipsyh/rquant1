@@ -20,13 +20,16 @@ pub struct BacktestConfig {
     /// 初始资金
     #[arg(long = "cash", default_value_t = 100_000.0)]
     pub initial_cash: f64,
-    /// 买入佣金率；不含额外过户费。
-    #[arg(long = "commission", default_value_t = 0.0005)]
+    /// 买卖双向佣金率，默认万分之三。
+    #[arg(long = "commission", default_value_t = 0.0003)]
     pub commission_rate: f64,
     /// 最低佣金（元）
     #[arg(long = "min-commission", default_value_t = 5.0)]
     pub minimum_commission: f64,
-    /// 买入成交价 = 当日原始开盘价 × (1 + slippage_bps / 10000)。
+    /// 印花税率，默认万分之五，仅卖出收取，无最低收费。
+    #[arg(long = "stamp-tax", default_value_t = 0.0005)]
+    pub stamp_tax_rate: f64,
+    /// 买入/卖出成交价 = 当日原始开盘价 × (1 ± slippage_bps / 10000)。
     #[arg(long, default_value_t = 0.0)]
     pub slippage_bps: f64,
     /// 交易单位（股）
@@ -51,6 +54,7 @@ impl Default for BacktestConfig {
             initial_cash: 100_000.0,
             commission_rate: 0.0003,
             minimum_commission: 5.0,
+            stamp_tax_rate: 0.0005,
             slippage_bps: 0.0,
             lot_size: 100,
             adjust_returns: true,
@@ -70,11 +74,13 @@ impl BacktestConfig {
             || !(0.0..1.0).contains(&self.commission_rate)
             || !self.minimum_commission.is_finite()
             || self.minimum_commission < 0.0
+            || !self.stamp_tax_rate.is_finite()
+            || !(0.0..1.0).contains(&self.stamp_tax_rate)
             || !self.slippage_bps.is_finite()
             || !(0.0..10_000.0).contains(&self.slippage_bps)
             || self.lot_size == 0
         {
-            return Err(anyhow!("回测参数无效: 佣金、滑点或交易单位无效"));
+            return Err(anyhow!("回测参数无效: 佣金、印花税、滑点或交易单位无效"));
         }
         Ok(())
     }
@@ -101,9 +107,16 @@ impl BtContext<'_> {
         self.positions.get(&symbol)
     }
 
+    pub fn adjust_returns(&self) -> bool {
+        self.adjust_returns
+    }
+
     /// 查询任意股票指定区间的已完成日线；允许查询回测开始日之前的数据。
     pub async fn history(&self, symbol: InstrSymbol, start: Date, end: Date) -> Vec<StockDailyBar> {
-        assert!(end >= self.date && start > end);
+        assert!(
+            start <= end && end < self.date,
+            "历史查询区间无效或包含当日及未来数据"
+        );
         let mut provider = self.provider.lock().await;
         rbt::load_bars(&mut **provider, symbol, start, end, self.adjust_returns).await
     }
@@ -120,12 +133,14 @@ pub enum Order {
         symbol: InstrSymbol,
         cash_amount: f64,
     },
+    /// 清仓指定股票；当天买入过该股票时拒绝清仓。
+    SellAll { symbol: InstrSymbol },
 }
 
 /// 按股票独立记录持仓，估值口径由 BacktestConfig::adjust_returns 决定。
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Position {
-    /// 累计买入股数；复权模式下不代表公司行动后的实际股数。
+    /// 当前未平仓的买入股数；复权模式下不代表公司行动后的实际股数。
     pub purchased_shares: u64,
     pub market_value: f64,
 }
@@ -137,7 +152,11 @@ pub struct Trade {
     pub side: &'static str,
     pub shares: u64,
     pub price: f64,
+    /// 成交金额。复权模式卖出按收益单位结算，可能不等于 shares × price。
+    pub notional: f64,
     pub commission: f64,
+    /// 卖出印花税，买入恒为 0。
+    pub stamp_tax: f64,
     pub cash_after: f64,
 }
 
@@ -158,6 +177,7 @@ pub struct EquityPoint {
 pub struct SkippedOrder {
     pub date: Date,
     pub symbol: String,
+    pub side: &'static str,
     pub reason: String,
 }
 
@@ -173,6 +193,9 @@ pub struct Performance {
     /// 无风险利率取 0；波动为 0 或样本不足时为 None。
     pub sharpe_ratio: Option<f64>,
     pub total_commission: f64,
+    pub total_stamp_tax: f64,
+    /// 佣金与印花税合计。
+    pub total_fees: f64,
     pub trade_count: usize,
 }
 

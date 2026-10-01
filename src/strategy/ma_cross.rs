@@ -1,0 +1,161 @@
+use super::Strategy;
+use crate::{
+    data::{Adjustment, InstrSymbol, StockDailyBar},
+    engine::{BtContext, Order},
+};
+use clap::Args;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use time::Date;
+
+#[derive(Args, Debug, Clone)]
+pub struct MaCrossConfig {
+    /// 目标股票，可重复指定或用逗号分隔
+    #[arg(long = "symbol", required = true, value_delimiter = ',')]
+    pub symbols: Vec<InstrSymbol>,
+    /// 短期 SMA 周期，按有日线的交易日计数
+    #[arg(long, default_value_t = 5)]
+    pub short: usize,
+    /// 长期 SMA 周期，必须大于短期周期
+    #[arg(long, default_value_t = 20)]
+    pub long: usize,
+    /// 目标总仓位比例；按上一日权益等额分配各股票的买入预算
+    #[arg(long, default_value_t = 1.0)]
+    pub allocation: f64,
+}
+
+impl MaCrossConfig {
+    pub fn validate(&self) {
+        assert!(
+            !self.symbols.is_empty()
+                && self.symbols.iter().collect::<BTreeSet<_>>().len() == self.symbols.len(),
+            "目标股票不能为空或包含重复股票"
+        );
+        assert!(
+            self.short > 0 && self.short < self.long && self.long < usize::MAX,
+            "均线周期须满足 0 < short < long < usize::MAX"
+        );
+        assert!(
+            self.allocation.is_finite() && self.allocation > 0.0 && self.allocation <= 1.0,
+            "仓位比例须在 (0, 1] 内"
+        );
+    }
+}
+
+#[derive(Default)]
+struct SignalState {
+    bars: VecDeque<StockDailyBar>,
+    // None 表示尚未发生交叉；不能仅因初始短均线较高就买入。
+    target_long: Option<bool>,
+}
+
+/// 回测内积累 long + 1 根已完成日线，按相邻两根日线的 SMA 判断交叉。
+/// 信号在下一次开盘交易；未成交时维持目标，直到出现反向交叉。
+pub struct MaCross {
+    config: MaCrossConfig,
+    states: BTreeMap<InstrSymbol, SignalState>,
+    next_history_date: Option<Date>,
+}
+
+impl MaCross {
+    pub fn new(config: MaCrossConfig) -> Self {
+        config.validate();
+        Self {
+            config,
+            states: BTreeMap::new(),
+            next_history_date: None,
+        }
+    }
+}
+
+fn crossover(
+    bars: &VecDeque<StockDailyBar>,
+    short: usize,
+    long: usize,
+    adjusted: bool,
+) -> Option<bool> {
+    if bars.len() < long + 1 {
+        return None;
+    }
+    let factor = |bar: &StockDailyBar| match (adjusted, bar.adjustment) {
+        (true, Some(Adjustment::Raw(f))) => f,
+        _ => 1.0,
+    };
+    // 相邻两个窗口使用同一基准，且基准来自已完成日线。
+    let base = factor(bars.back().unwrap());
+    let mean = |offset: usize, period: usize| {
+        bars.iter()
+            .skip(offset)
+            .take(period)
+            .map(|bar| bar.close * (factor(bar) / base) / period as f64)
+            .sum::<f64>()
+    };
+    let prev_short = mean(long - short, short);
+    let prev_long = mean(0, long);
+    let curr_short = mean(long + 1 - short, short);
+    let curr_long = mean(1, long);
+    assert!(
+        [prev_short, prev_long, curr_short, curr_long]
+            .iter()
+            .all(|v| v.is_finite()),
+        "均线计算溢出"
+    );
+    if prev_short <= prev_long && curr_short > curr_long {
+        Some(true)
+    } else if prev_short >= prev_long && curr_short < curr_long {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+#[async_trait::async_trait]
+impl Strategy for MaCross {
+    fn name(&self) -> &str {
+        "ma_cross"
+    }
+
+    async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Order> {
+        let Some(start) = self.next_history_date.replace(ctx.date()) else {
+            return Vec::new();
+        };
+        let end = ctx.date().previous_day().expect("回测日期必须递增");
+        let mut sells = Vec::new();
+        let mut buys = Vec::new();
+        let budget = ctx.equity * self.config.allocation / self.config.symbols.len() as f64;
+        let mut available = ctx.cash;
+        for &symbol in &self.config.symbols {
+            let history = ctx.history(symbol, start, end).await;
+            let state = self.states.entry(symbol).or_default();
+            for bar in history {
+                state.bars.push_back(bar);
+                if state.bars.len() > self.config.long + 1 {
+                    state.bars.pop_front();
+                }
+                if let Some(target) = crossover(
+                    &state.bars,
+                    self.config.short,
+                    self.config.long,
+                    ctx.adjust_returns(),
+                ) {
+                    state.target_long = Some(target);
+                }
+            }
+            let held = ctx.position(symbol).is_some_and(|p| p.purchased_shares > 0);
+            match (state.target_long, held) {
+                (Some(false), true) => sells.push(Order::SellAll { symbol }),
+                (Some(true), false) if available > 0.0 => {
+                    let cash_amount = budget.min(available);
+                    buys.push(Order::Buy {
+                        symbol,
+                        cash_amount,
+                    });
+                    available -= cash_amount;
+                }
+                _ => {}
+            }
+        }
+        // 买入预算只用开盘前现金，不提前假定卖出一定成交。
+        sells.extend(buys);
+        sells
+    }
+}
