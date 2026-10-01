@@ -1,5 +1,6 @@
 use super::*;
 use crate::data::{Adjustment, Stock};
+use crate::utils::DateRange;
 use std::sync::{Arc, Mutex};
 use time::macros::date;
 
@@ -82,7 +83,7 @@ async fn drop保存并在重建后命中日线缓存() {
         assert!(
             ron::from_str::<RqData>(&std::fs::read_to_string(&path).unwrap())
                 .unwrap()
-                .bars
+                .stock_bars
                 .is_empty()
         );
         cache.inner.data.stock.insert(
@@ -114,7 +115,10 @@ async fn drop保存并在重建后命中日线缓存() {
         assert_eq!(stock.listed, date!(1991 - 04 - 03));
         assert_eq!(stock.delisted, None);
         assert_eq!(stock.industry.as_deref(), Some("银行"));
-        assert_eq!(cache.inner.data.bar_date[&symbol], (start, end));
+        assert_eq!(
+            cache.inner.data.stock_bar_date[&symbol],
+            DateRange::new(start, end)
+        );
         assert!(requests.lock().unwrap().is_empty());
         assert_eq!(cache.trading_days(start, end).await, vec![start]);
         // 即使没有新增数据，Drop 也会重写。
@@ -247,8 +251,8 @@ async fn 两端补拉后所有日线有序且完整保存() {
     }
     let text = std::fs::read_to_string(&path).unwrap();
     let data: RqData = ron::from_str(&text).unwrap();
-    assert_eq!(data.bar_date[&symbol], (first, last));
-    assert_eq!(data.bars[&symbol], bars);
+    assert_eq!(data.stock_bar_date[&symbol], DateRange::new(first, last));
+    assert_eq!(data.stock_bars[&symbol], bars);
     requests.lock().unwrap().clear();
     let mut cache =
         DiskCacheProvider::with_path(provider(vec![], &requests), first, last, path).unwrap();
@@ -265,34 +269,45 @@ fn 拒绝区间不一致或无序重复日线且保留文件() {
     let last = date!(2024 - 01 - 03);
     for case in 0..7 {
         let mut data = RqData::default();
-        data.bar_date.insert(symbol, (first, last));
-        data.bars
+        data.stock_bar_date
+            .insert(symbol, DateRange::new(first, last));
+        data.stock_bars
             .insert(symbol, vec![bar(symbol, first), bar(symbol, last)]);
         match case {
             0 => {
-                data.bar_date.clear();
+                data.stock_bar_date.clear();
             }
             1 => {
-                data.bars.clear();
+                data.stock_bars.clear();
             }
-            2 => {
-                data.bar_date.insert(symbol, (last, first));
-            }
+            // 无效区间只能在序列化后篡改，公开 API 不允许构造。
+            2 => {}
             3 => {
-                data.bar_date.insert(symbol, (first, first));
+                data.stock_bar_date
+                    .insert(symbol, DateRange::new(first, first));
             }
             4 => {
-                data.bars.get_mut(&symbol).unwrap().reverse();
+                data.stock_bars.get_mut(&symbol).unwrap().reverse();
             }
             5 => {
-                data.bars.get_mut(&symbol).unwrap()[1].date = first;
+                data.stock_bars.get_mut(&symbol).unwrap()[1].date = first;
             }
             6 => {
-                data.bars.get_mut(&symbol).unwrap()[0].symbol = "600000.SH".into();
+                data.stock_bars.get_mut(&symbol).unwrap()[0].symbol = "600000.SH".into();
             }
             _ => unreachable!(),
         }
-        let text = ron::to_string(&data).unwrap();
+        let mut text = ron::to_string(&data).unwrap();
+        if case == 2 {
+            let valid = ron::to_string(&DateRange::new(first, last)).unwrap();
+            let invalid = format!(
+                "(start:{},end:{})",
+                ron::to_string(&last).unwrap(),
+                ron::to_string(&first).unwrap()
+            );
+            assert!(text.contains(&valid));
+            text = text.replace(&valid, &invalid);
+        }
         std::fs::write(&path, &text).unwrap();
         let result = DiskCacheProvider::with_path(
             provider(vec![], &Requests::default()),
