@@ -3,7 +3,7 @@
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 
-use super::error::TushareError;
+use anyhow::{Context, Result, bail};
 
 /// tushare 的返回结果，等价于 Python 侧的
 /// `pd.DataFrame(data['items'], columns=data['fields'])`（`client.py:47-50`）。
@@ -21,15 +21,15 @@ impl Table {
     ///
     /// tushare 正常总是返回等长行；长度不一致说明响应被截断或字段错位。
     /// 这属于必须暴露的结构异常，不能像 Python 那样让它悄悄变成 NaN 列。
-    pub fn new(fields: Vec<String>, rows: Vec<Vec<Value>>) -> Result<Self, TushareError> {
+    pub fn new(fields: Vec<String>, rows: Vec<Vec<Value>>) -> Result<Self> {
         for (index, row) in rows.iter().enumerate() {
             if row.len() != fields.len() {
-                return Err(TushareError::Shape(format!(
-                    "第 {index} 行有 {} 个值，但 fields 有 {} 列（{}）",
+                bail!(
+                    "响应结构异常: 第 {index} 行有 {} 个值，但 fields 有 {} 列（{}）",
                     row.len(),
                     fields.len(),
                     fields.join(",")
-                )));
+                );
             }
         }
         Ok(Self { fields, rows })
@@ -100,13 +100,13 @@ impl Table {
     /// 两者刻意不同：[`Column::as_f64`] 对标 `pd.to_numeric(errors="coerce")`
     /// 的宽松口径，适合逐列取值；`to_typed` 保持严格，避免像 `"000001"` 这样的
     /// 代码被悄悄当成数字 1。类型不符时按行报错并给出行号，不会静默丢数据。
-    pub fn to_typed<T: DeserializeOwned>(&self) -> Result<Vec<T>, TushareError> {
+    pub fn to_typed<T: DeserializeOwned>(&self) -> Result<Vec<T>> {
         self.rows
             .iter()
             .enumerate()
             .map(|(row, values)| {
                 serde_json::from_value(Value::Object(zip_record(&self.fields, values)))
-                    .map_err(|source| TushareError::Deserialize { row, source })
+                    .with_context(|| format!("第 {row} 行无法反序列化为目标类型"))
             })
             .collect()
     }

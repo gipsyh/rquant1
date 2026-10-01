@@ -25,7 +25,7 @@ const CASES: &[(&str, InstrType)] = &[
 fn 裸代码按号段推断板块() {
     for (code, expected) in CASES {
         let symbol = InstrSymbol::from(*code);
-        assert_eq!(symbol.tp, *expected, "{code} 的板块");
+        assert_eq!(symbol.ty, *expected, "{code} 的板块");
         assert_eq!(symbol.id, code.parse::<u32>().unwrap(), "{code} 的 id");
     }
 }
@@ -79,7 +79,11 @@ fn 两位缩写与四位后缀解析结果相同() {
         ("688981.SH", "688981.XSHG"),
         ("300750.SZ", "300750.XSHE"),
     ] {
-        assert_eq!(InstrSymbol::from(short), InstrSymbol::from(long), "{short} vs {long}");
+        assert_eq!(
+            InstrSymbol::from(short),
+            InstrSymbol::from(long),
+            "{short} vs {long}"
+        );
     }
 }
 

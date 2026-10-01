@@ -1,19 +1,19 @@
 mod cache;
+mod memory;
+pub use cache::MemCacheProvider;
+pub use memory::InMemoryProvider;
 #[cfg(test)]
 mod test;
 pub mod tushare;
 
-use std::{
-    collections::HashMap,
-    fmt::{self, Display},
-};
+use std::fmt::{self, Display};
 use time::Date;
 
 /// Instrument Symbol
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InstrSymbol {
     id: u32,
-    tp: InstrType,
+    ty: InstrType,
 }
 
 impl From<&str> for InstrSymbol {
@@ -21,6 +21,14 @@ impl From<&str> for InstrSymbol {
     /// - 裸 6 位数字：`"000001"`，由号段推断 [`InstrType`]
     /// - 带交易所后缀：`"000001.XSHE"` 或 `"000001.SZ"`，后缀须与号段推断结果一致
     fn from(value: &str) -> Self {
+        value.parse().unwrap_or_else(|err| panic!("{err}"))
+    }
+}
+
+impl std::str::FromStr for InstrSymbol {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         let text = value.trim().to_ascii_uppercase();
         let (code, suffix) = match text.split_once('.') {
             Some((code, suffix)) => (code, Some(suffix)),
@@ -28,7 +36,7 @@ impl From<&str> for InstrSymbol {
         };
 
         if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
-            panic!("股票代码须为 6 位数字，实际为 {value:?}");
+            return Err(anyhow::anyhow!("股票代码须为 6 位数字，实际为 {value:?}"));
         }
 
         // 号段表对应 helpers.py 的 _STOCK_PREFIXES，但只保留本枚举有的四个分类。
@@ -41,7 +49,11 @@ impl From<&str> for InstrSymbol {
             "000" | "001" | "002" | "003" => InstrType::SzMain,
             // 创业板 300/301
             "300" | "301" => InstrType::SzChiNext,
-            other => panic!("未知的股票号段 {other:?}（代码 {value:?}）"),
+            other => {
+                return Err(anyhow::anyhow!(
+                    "未知的股票号段 {other:?}（代码 {value:?}）"
+                ));
+            }
         };
 
         if let Some(suffix) = suffix {
@@ -52,10 +64,10 @@ impl From<&str> for InstrSymbol {
                 InstrType::SzMain | InstrType::SzChiNext => &["SZ", "XSHE"],
             };
             if !accepted.contains(&suffix) {
-                panic!(
+                return Err(anyhow::anyhow!(
                     "后缀与号段矛盾：{value:?} 属于 {}，却写成 {suffix:?}",
                     accepted.join(" 或 ")
-                );
+                ));
             }
         }
 
@@ -63,17 +75,17 @@ impl From<&str> for InstrSymbol {
             .parse::<u32>()
             .unwrap_or_else(|_| panic!("6 位数字无法解析成 u32：{value:?}"));
 
-        Self { id, tp }
+        Ok(Self { id, ty: tp })
     }
 }
 
 impl Display for InstrSymbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:06}.{}", self.id, self.tp)
+        write!(f, "{:06}.{}", self.id, self.ty)
     }
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InstrType {
     /// 上交所主板
     ShMain,
@@ -96,15 +108,15 @@ impl Display for InstrType {
 
 pub struct Stock {
     /// 股票代码
-    symbol: InstrSymbol,
+    pub symbol: InstrSymbol,
     /// 股票名称
-    name: String,
+    pub name: String,
     /// 上市日期
-    listed: Date,
+    pub listed: Date,
     /// 退市日
-    delisted: Option<Date>,
+    pub delisted: Option<Date>,
     /// 行业
-    industry: Option<String>,
+    pub industry: Option<String>,
 }
 
 /// OHLC 与涨跌停价的实际复权状态。
@@ -153,23 +165,36 @@ pub struct StockDailyBar {
     /// 跌停价；接口无有效价格时为 `None`。口径同 [`Self::limit_up`]。
     pub limit_down: Option<f64>,
     /// 流通市值（元）。来自 Tushare `daily_basic.circ_mv`（上游单位万元，已 ×10000）。
-    ///
     /// 与 OHLC 不同，它不参与复权，是当日真实口径；数据缺失时为 `None`。
     pub float_market_cap: Option<f64>,
     /// OHLC 与涨跌停价的实际复权状态。
-    ///
     /// `None` 表示未复权且无可用因子（如指数、因子缺失或无效）；
     /// 这与 `Some(Adjustment::Raw(_))` 不同，前者是因子不可得，后者是因子可得。
     pub adjustment: Option<Adjustment>,
+    /// 该交易日是否处于 ST/*ST 状态，随历史日期变化。
+    /// Tushare 数据源按 stock_st 当日名单填充；查询失败会报错。
+    pub st: bool,
 }
 
-pub trait DataProvider {
-    fn stock_basic(&mut self, stock: InstrSymbol, start: Date, end: Date) -> Stock;
+/// 原始 OHLC；复权因子随 bar 保存，估值时才使用。
+#[derive(Debug, Clone)]
+pub struct MarketData {
+    pub symbol: InstrSymbol,
+    pub trading_days: Vec<Date>,
+    pub bars: Vec<StockDailyBar>,
+}
 
-    fn stock_basics(
+/// 交易日历与股票行情独立查询
+#[async_trait::async_trait]
+pub trait DataProvider: Send + Sync {
+    /// 股票交易日查询
+    async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date>;
+
+    /// 股票日线，返回时按时间排序
+    async fn daily_bars(
         &mut self,
-        stocks: &[InstrSymbol],
+        symbol: InstrSymbol,
         start: Date,
         end: Date,
-    ) -> HashMap<InstrSymbol, Stock>;
+    ) -> Vec<StockDailyBar>;
 }
