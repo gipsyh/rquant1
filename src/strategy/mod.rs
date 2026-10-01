@@ -1,3 +1,5 @@
+mod buy_and_hold;
+
 use time::Date;
 
 pub trait Strategy {

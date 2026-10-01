@@ -1,3 +1,4 @@
+mod cache;
 #[cfg(test)]
 mod test;
 pub mod tushare;
