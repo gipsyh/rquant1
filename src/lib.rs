@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
-mod data;
+pub mod data;
+pub mod strategy;
 
 /// A Python module implemented in Rust.
 #[pymodule]

@@ -1,5 +1,7 @@
-mod tushare;
+pub mod tushare;
+
 use std::fmt::{self, Display};
+use time::Date;
 
 /// Instrument Symbol
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -34,3 +36,17 @@ impl Display for InstrType {
         }
     }
 }
+
+pub struct Stock {
+    symbol: InstrSymbol,
+    /// 股票名称
+    name: String,
+    /// 上市日期
+    listed: Date,
+    /// 退市日
+    delisted: Option<Date>,
+    /// 行业
+    industry: Option<String>,
+}
+
+pub trait DataProvider {}
