@@ -1,5 +1,22 @@
 use anyhow::{Context, Result};
-use time::{Date, macros::format_description};
+use time::{
+    Date, OffsetDateTime, UtcOffset,
+    macros::{format_description, offset},
+};
+
+/// 返回当前可取到行情的最新日期。
+/// 按北京时间判断：19:00 及以后返回今天，在此之前返回昨天，不跳过非交易日。
+pub fn latest_rqdate() -> Date {
+    const DATA_READY_HOUR: u8 = 19;
+    const MARKET_TZ: UtcOffset = offset!(+8);
+
+    let now = OffsetDateTime::now_utc().to_offset(MARKET_TZ);
+    if now.hour() >= DATA_READY_HOUR {
+        now.date()
+    } else {
+        now.date().previous_day().unwrap()
+    }
+}
 
 /// 解析 YYYYMMDD 或 YYYY-MM-DD 日期。
 pub fn parse_date(value: &str) -> Result<Date> {

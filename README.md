@@ -26,7 +26,7 @@ cargo run -- bt ma-cross --help
 
 `bt` 由两份配置组成：公共参数 `BacktestConfig` 使用 clap flatten，策略参数 `StrategyConfig` 使用子命令。先写公共参数，再写策略名称及其专属参数。支持 `buy-and-hold`（别名 `buy_and_hold`）和 `ma-cross`（别名 `ma_cross`）。两个策略都有 `--symbol`（必填）和 `--allocation`；`ma-cross` 另有 `--short`（默认 5）和 `--long`（默认 20），要求 `0 < short < long`。
 
-公共参数中 `--end` 必填，`--start` 默认 `20200101`，起止日期均包含在回测区间内。资金、费用、滑点、交易单位、复权开关及输出路径均属于 `BacktestConfig`，应放在策略名称之前。
+公共参数中 `--end` 默认使用最新可取行情日期：北京时间 19:00 前取昨天，19:00 及以后取今天（不跳过非交易日）；`--start` 默认 `20200101`，起止日期均包含在回测区间内。资金、费用、滑点、交易单位、复权开关及输出路径均属于 `BacktestConfig`，应放在策略名称之前。
 
 `--symbol` 是内置策略的目标参数，不是通用策略接口的股票池约束。自定义策略无需提供目标列表，可在回调中决定查询和交易任意股票。
 
@@ -85,7 +85,7 @@ Python 便利函数目前接受单只目标股票，内部使用同一个多股�
 
 ## Rust
 
-策略配置枚举和 `build()` 位于 `strategy/mod.rs`，`build()` 直接返回 `Box<dyn Strategy>`，`BuyAndHold::new(config)` 直接返回策略实例；配置无效时直接报错（panic）。具体策略的配置与实现放在一起；新增策略时添加对应 config 和枚举变体。`BacktestConfig` 也是引擎实际使用的配置，不再从 CLI 参数复制转换。Rust 的 `Default` 使用 `20200101` 到当前 UTC 日期；CLI 仍要求显式传入 `--end`。
+策略配置枚举和 `build()` 位于 `strategy/mod.rs`，`build()` 直接返回 `Box<dyn Strategy>`，`BuyAndHold::new(config)` 直接返回策略实例；配置无效时直接报错（panic）。具体策略的配置与实现放在一起；新增策略时添加对应 config 和枚举变体。`BacktestConfig` 也是引擎实际使用的配置，不再从 CLI 参数复制转换。默认值仅在 clap 属性中定义，Rust 的 `Default` 通过 clap 解析空参数生成配置，不读取进程命令行参数。Rust 的 `Default` 和 CLI 均使用 `20200101` 到 `utils::latest_rqdate()`，截止日期以北京时间 19:00 为分界。
 
 `DataProvider` 使用 `#[async_trait::async_trait]` 定义异步方法，实现时也需要添加该属性，支持 `dyn DataProvider` 动态分发。两个查询方法均使用 `&mut self`，允许数据源直接更新内部状态。分别提供 `trading_days(start, end)` 和 `daily_bars(symbol, start, end)`，直接返回 `Vec<Date>` 和 `Vec<StockDailyBar>`；请求失败或数据无效时直接 panic，空行情正常返回空数组。引擎启动时只取交易日历；策略查询历史、撮合订单和每日持仓估值时，才查询对应股票和日期。
 

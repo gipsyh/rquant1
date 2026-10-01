@@ -1,21 +1,21 @@
 mod rbt;
 
 use crate::data::{DataProvider, InstrSymbol, StockDailyBar};
-use crate::utils::parse_date;
+use crate::utils::{latest_rqdate, parse_date};
 use anyhow::{Result, anyhow};
-use clap::{ArgAction, Args};
+use clap::{ArgAction, Parser};
 pub use rbt::BacktestEngine;
 use serde::Serialize;
 use std::{collections::BTreeMap, path::PathBuf};
 use time::Date;
 
-#[derive(Args, Clone, Debug, Serialize)]
+#[derive(Parser, Clone, Debug, Serialize)]
 pub struct BacktestConfig {
     /// 开始日期（含），支持 YYYYMMDD 或 YYYY-MM-DD
     #[arg(long, default_value = "20200101", value_parser = parse_date)]
     pub start: Date,
-    /// 截止日期（含），支持 YYYYMMDD 或 YYYY-MM-DD
-    #[arg(long, value_parser = parse_date)]
+    /// 截止日期（含），支持 YYYYMMDD 或 YYYY-MM-DD；默认北京时间 19:00 前取昨天，否则取今天
+    #[arg(long, default_value_t = latest_rqdate(), value_parser = parse_date)]
     pub end: Date,
     /// 初始资金
     #[arg(long = "cash", default_value_t = 100_000.0)]
@@ -46,19 +46,8 @@ pub struct BacktestConfig {
 
 impl Default for BacktestConfig {
     fn default() -> Self {
-        Self {
-            start: time::macros::date!(2020 - 01 - 01),
-            // Rust 调用的默认截止日；CLI 仍要求显式提供 --end。
-            end: time::OffsetDateTime::now_utc().date(),
-            output: None,
-            initial_cash: 100_000.0,
-            commission_rate: 0.0003,
-            minimum_commission: 5.0,
-            stamp_tax_rate: 0.0005,
-            slippage_bps: 0.0,
-            lot_size: 100,
-            adjust_returns: true,
-        }
+        // 只传程序名，让 clap 填充各字段的默认值，不读取进程命令行参数。
+        Self::try_parse_from(["rquant"]).unwrap()
     }
 }
 
