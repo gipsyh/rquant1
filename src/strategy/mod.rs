@@ -1,9 +1,9 @@
 mod buy_and_hold;
 
-use time::Date;
+use crate::engine::BtContext;
 
 pub trait Strategy {
     fn name(&self) -> &str;
 
-    fn handle_trade_day(&mut self, day: Date);
+    fn on_trade_day(&mut self, ctx: BtContext);
 }

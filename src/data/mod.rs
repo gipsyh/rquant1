@@ -164,7 +164,12 @@ pub struct StockDailyBar {
 }
 
 pub trait DataProvider {
-    fn stock_basic(stock: InstrSymbol, start: Date, end: Date) -> Stock;
+    fn stock_basic(&mut self, stock: InstrSymbol, start: Date, end: Date) -> Stock;
 
-    fn stock_basics(stocks: &[InstrSymbol], start: Date, end: Date) -> HashMap<InstrSymbol, Stock>;
+    fn stock_basics(
+        &mut self,
+        stocks: &[InstrSymbol],
+        start: Date,
+        end: Date,
+    ) -> HashMap<InstrSymbol, Stock>;
 }
