@@ -1,7 +1,5 @@
 use super::*;
-use crate::data::{
-    Adjustment, DataProvider, InMemoryProvider, InstrSymbol, MarketData, MemCacheProvider,
-};
+use crate::data::{Adjustment, DataProvider, InstrSymbol, MemCacheProvider};
 use crate::strategy::Strategy;
 use anyhow::{Result, anyhow};
 use std::collections::{BTreeMap, BTreeSet};
@@ -168,16 +166,6 @@ impl BacktestEngine {
             equity_curve,
             skipped_orders,
         })
-    }
-
-    /// 内存行情也通过同一套按需查询路径执行，便于离线重放。
-    pub async fn run_with_data(
-        &self,
-        strategy: Box<dyn Strategy>,
-        data: &[MarketData],
-    ) -> Result<BacktestResult> {
-        let provider = InMemoryProvider::new(data)?;
-        self.run(Box::new(provider), strategy).await
     }
 
     fn buy(&self, bar: Option<&StockDailyBar>, budget: f64) -> Result<(u64, f64, f64)> {

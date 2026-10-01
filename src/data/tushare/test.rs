@@ -10,7 +10,7 @@
 //! ```
 
 use super::provider::{is_rate_limited, is_retryable};
-use crate::data::{Adjustment, DataProvider, InstrSymbol, MarketData};
+use crate::data::{DataProvider, InstrSymbol};
 use crate::engine::{BacktestConfig, BacktestEngine};
 use crate::strategy::{BuyAndHold, BuyAndHoldConfig};
 use crate::utils::parse_date;
@@ -640,62 +640,6 @@ async fn fixture_with_st(server: &MockServer, factors: Value, st_rows: Value) {
         ]),
     )
     .await;
-}
-
-#[tokio::test]
-async fn full_pipeline_sorts_joins_converts_units_and_preserves_suspension() {
-    let server = MockServer::start().await;
-    fixture(
-        &server,
-        json!([["000001.SZ", "20240104", 2], ["000001.SZ", "20240102", 2]]),
-    )
-    .await;
-    let start = parse_date("20240101").unwrap();
-    let end = parse_date("20240104").unwrap();
-    let mut provider = provider(&server);
-    let symbol = InstrSymbol::from("000001.XSHE");
-    let data = MarketData {
-        symbol,
-        trading_days: provider.trading_days(start, end).await,
-        bars: provider.daily_bars(symbol, start, end).await,
-    };
-    assert_eq!(data.trading_days.len(), 3);
-    assert_eq!(data.bars.len(), 2);
-    let first = &data.bars[0];
-    assert_eq!(first.date, parse_date("20240102").unwrap());
-    assert_eq!(first.volume, 100_000.0);
-    assert_eq!(first.turnover, 100_000.0);
-    assert_eq!(first.adjustment, Some(Adjustment::Raw(2.0)));
-    assert!(data.bars.iter().all(|bar| !bar.st));
-    let result = BacktestEngine::new(BacktestConfig {
-        start,
-        end,
-        ..Default::default()
-    })
-    .unwrap()
-    .run_with_data(
-        Box::new(BuyAndHold::new(BuyAndHoldConfig {
-            symbols: vec![InstrSymbol::from("000001")],
-            allocation: 1.0,
-        })),
-        std::slice::from_ref(&data),
-    )
-    .await
-    .unwrap();
-    assert_eq!(result.trades.len(), 1);
-    assert_eq!(result.equity_curve[0].equity, result.equity_curve[1].equity);
-    assert!((result.performance.final_equity - 109_870.3).abs() < 1e-8);
-    for request in server.received_requests().await.unwrap() {
-        let body: Value = serde_json::from_slice(&request.body).unwrap();
-        assert_eq!(body["params"]["start_date"], "20240101");
-        assert_eq!(body["params"]["end_date"], "20240104");
-        if body["api_name"] == "trade_cal" {
-            assert_eq!(body["params"]["exchange"], "SSE");
-            assert_eq!(body["params"]["is_open"], "1");
-        } else {
-            assert_eq!(body["params"]["ts_code"], "000001.SZ");
-        }
-    }
 }
 
 #[tokio::test]

@@ -1,7 +1,5 @@
 mod cache;
-mod memory;
 pub use cache::MemCacheProvider;
-pub use memory::InMemoryProvider;
 #[cfg(test)]
 mod test;
 pub mod tushare;
@@ -174,14 +172,6 @@ pub struct StockDailyBar {
     /// 该交易日是否处于 ST/*ST 状态，随历史日期变化。
     /// Tushare 数据源按 stock_st 当日名单填充；查询失败会报错。
     pub st: bool,
-}
-
-/// 原始 OHLC；复权因子随 bar 保存，估值时才使用。
-#[derive(Debug, Clone)]
-pub struct MarketData {
-    pub symbol: InstrSymbol,
-    pub trading_days: Vec<Date>,
-    pub bars: Vec<StockDailyBar>,
 }
 
 /// 交易日历与股票行情独立查询
