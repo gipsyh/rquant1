@@ -47,7 +47,6 @@ impl BuyAndHold {
 }
 
 #[async_trait::async_trait]
-
 impl Strategy for BuyAndHold {
     fn name(&self) -> &str {
         "buy_and_hold"

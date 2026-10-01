@@ -4,7 +4,7 @@ use clap::Parser;
 use config::{Cli, Command};
 use env_logger::Target;
 use rquant::{
-    data::tushare::TushareProvider,
+    data::{DiskCacheProvider, tushare::TushareProvider},
     engine::{BacktestConfig, BacktestEngine},
     strategy::StrategyConfig,
 };
@@ -51,7 +51,11 @@ async fn run_bt(backtest: BacktestConfig, strategy: StrategyConfig) -> anyhow::R
     let output = backtest.output.clone();
     let engine = BacktestEngine::new(backtest)?;
     let strategy = strategy.build();
-    let provider = Box::new(TushareProvider::new());
+    let provider = Box::new(DiskCacheProvider::new(
+        Box::new(TushareProvider::new()),
+        engine.config.start,
+        engine.config.end,
+    ));
     let result = engine.run(provider, strategy).await?;
     let json = serde_json::to_string_pretty(&result)?;
     if let Some(output) = output {

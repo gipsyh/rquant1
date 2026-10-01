@@ -1,4 +1,5 @@
 /target
+/rqdata.ron
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

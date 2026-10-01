@@ -1,14 +1,18 @@
 mod cache;
-pub use cache::MemCacheProvider;
+pub use cache::{DiskCacheProvider, MemCacheProvider};
 #[cfg(test)]
 mod test;
 pub mod tushare;
 
-use std::fmt::{self, Display};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    fmt::{self, Display},
+};
 use time::Date;
 
 /// Instrument Symbol
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InstrSymbol {
     id: u32,
     ty: InstrType,
@@ -83,7 +87,7 @@ impl Display for InstrSymbol {
     }
 }
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum InstrType {
     /// 上交所主板
     ShMain,
@@ -104,6 +108,7 @@ impl Display for InstrType {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Stock {
     /// 股票代码
     pub symbol: InstrSymbol,
@@ -122,7 +127,7 @@ pub struct Stock {
 /// 对应 Python `Bar.adjustment` 的 `float | str | None`。换成枚举后，
 /// 「字符串只允许 `"pre"`、`"post"`」这条约束由类型系统保证，不再需要运行时校验；
 /// 「请求复权但实际未完成时不得标记为已复权」也由构造方式保证。不影响成交量、成交额和市值 —— 它们恒为未复权口径。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Adjustment {
     /// 未复权，数值是当日原始 `adj_factor`（恒 > 0）。`1.0` 也表示未复权。
     Raw(f64),
@@ -132,11 +137,8 @@ pub enum Adjustment {
     Post,
 }
 
-/// 个股日线。
-///
-/// 除 `float_market_cap` 外，各价格字段一律用 `f64`：流通市值量级到千万
-/// （实测 `circ_mv` 可达 `2.2e7` 元），`f32` 的约 7 位有效数字会被截断。
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// 个股日线
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StockDailyBar {
     /// 股票代码
     pub symbol: InstrSymbol,
@@ -150,15 +152,14 @@ pub struct StockDailyBar {
     pub low: f64,
     /// 收盘价，复权状态见 [`Self::adjustment`]
     pub close: f64,
-    /// 成交量，单位「股」（上游「手」已 ×100）；未复权
+    /// 成交量，单位「股」（「手」 ×100）
     pub volume: f64,
-    /// 成交额，单位「元」（上游「千元」已 ×1000）；金额不参与复权
+    /// 成交额，单位「元」，不参与复权
     pub turnover: f64,
     /// 涨停价；接口无有效价格时为 `None`
-    /// 来自 Tushare `stk_limit` 的 `up_limit` / `down_limit`，不按比例估算。
-    /// 读取时与 OHLC 使用相同倍率复权（保留四位小数），状态统一见
-    /// [`Self::adjustment`]。未复权时是原始价格口径；复权后是分析用换算值，
-    /// 不是当日实际交易报价。
+    /// 读取时与 OHLC 使用相同倍率复权，状态统一见
+    /// [`Self::adjustment`]。未复权时是原始价格口径；
+    /// 复权后是分析用换算值，不是当日实际交易报价。
     pub limit_up: Option<f64>,
     /// 跌停价；接口无有效价格时为 `None`。口径同 [`Self::limit_up`]。
     pub limit_down: Option<f64>,
@@ -172,6 +173,17 @@ pub struct StockDailyBar {
     /// 该交易日是否处于 ST/*ST 状态，随历史日期变化。
     /// Tushare 数据源按 stock_st 当日名单填充；查询失败会报错。
     pub st: bool,
+}
+
+/// 全部已有数据；交易日历暂不存储。
+#[derive(Default, Serialize, Deserialize)]
+pub struct RqData {
+    stock: HashMap<InstrSymbol, Stock>,
+    /// Bar 数据的日期闭区间，如果bars在这个区间的数据不存在则代表非交易日、停牌、退市等
+    bar_date: HashMap<InstrSymbol, (Date, Date)>,
+    /// 与 bar_date 具有相同的股票键；日线按日期严格升序且位于对应闭区间内。
+    /// 已查询但没有日线的区间用空 Vec 表示。
+    bars: HashMap<InstrSymbol, Vec<StockDailyBar>>,
 }
 
 /// 交易日历与股票行情独立查询

@@ -70,36 +70,6 @@ Python 便利函数目前接受单只目标股票，内部使用同一个多股�
 
 ## Rust
 
-```rust,no_run
-use rquant::{
-    data::{InstrSymbol, tushare::TushareProvider},
-    utils::parse_date,
-    engine::{BacktestConfig, BacktestEngine},
-    strategy::{BuyAndHoldConfig, StrategyConfig},
-};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let provider = Box::new(TushareProvider::new());
-    let backtest = BacktestConfig {
-        start: parse_date("20240101")?,
-        end: parse_date("20241231")?,
-        ..Default::default()
-    };
-    let strategy = StrategyConfig::BuyAndHold(BuyAndHoldConfig {
-        symbols: vec![
-            "000001.SZ".parse::<InstrSymbol>()?,
-            "600000.SH".parse::<InstrSymbol>()?,
-        ],
-        allocation: 1.0,
-    });
-    let engine = BacktestEngine::new(backtest)?;
-    let result = engine.run(provider, strategy.build()).await?;
-    println!("{:?}", result.performance);
-    Ok(())
-}
-```
-
 策略配置枚举和 `build()` 位于 `strategy/mod.rs`，`build()` 直接返回 `Box<dyn Strategy>`，`BuyAndHold::new(config)` 直接返回策略实例；配置无效时直接报错（panic）。具体策略的配置与实现放在一起；新增策略时添加对应 config 和枚举变体。`BacktestConfig` 也是引擎实际使用的配置，不再从 CLI 参数复制转换。Rust 的 `Default` 使用 `20200101` 到当前 UTC 日期；CLI 仍要求显式传入 `--end`。
 
 `DataProvider` 使用 `#[async_trait::async_trait]` 定义异步方法，实现时也需要添加该属性，支持 `dyn DataProvider` 动态分发。两个查询方法均使用 `&mut self`，允许数据源直接更新内部状态。分别提供 `trading_days(start, end)` 和 `daily_bars(symbol, start, end)`，直接返回 `Vec<Date>` 和 `Vec<StockDailyBar>`；请求失败或数据无效时直接 panic，空行情正常返回空数组。引擎启动时只取交易日历；策略查询历史、撮合订单和每日持仓估值时，才查询对应股票和日期。
@@ -124,7 +94,11 @@ async fn on_trade_day(
 
 引擎逐日串行 `.await` 策略回调，上下文直接访问异步数据源和共享行情缓存，兼容 Tokio 单线程和多线程运行时。`BtContext` 通过异步锁访问数据源，历史查询仅需 `&self`。`run` 和 `run_with_data` 仍为异步方法。策略需要满足 `Send + 'static`，即持有自身数据；如需与调用方共享状态，可使用 `Arc<Mutex<_>>`。
 
-`MemCacheProvider` 内部持有 `Box<dyn DataProvider>`，只缓存日线；交易日历每次直接转发。首次查询某股票时，下载构造参数 `start..=end` 的整个区间，之后仅返回调用方请求的日期，停牌或空结果也会缓存。查询回测开始前的历史时，首次下载范围会涵盖该历史区间，之后向外扩展仅补拉缺少的部分。撮合、估值和策略历史查询共用此缓存；未访问的股票不会下载。缓存中即使已有未来日线，Context 仍禁止策略读取当日及未来数据。缓存仅存在于本次回测内存中，不跨运行保留。
+`MemCacheProvider` 内部持有 `Box<dyn DataProvider>`，只缓存日线；交易日历每次直接转发。首次查询某股票时，下载构造参数 `start..=end` 的整个区间，之后仅返回调用方请求的日期，停牌或空结果也会缓存。查询回测开始前的历史时，首次下载范围会涵盖该历史区间，之后向外扩展仅补拉缺少的部分。撮合、估值和策略历史查询共用此缓存；未访问的股票不会下载。缓存中即使已有未来日线，Context 仍禁止策略读取当日及未来数据。这层缓存仅存在于本次回测内存中。
+
+CLI 默认在 Tushare 外包装 `DiskCacheProvider::new(provider, start, end)`，将日线跨运行保存在启动时工作目录的 `rqdata.ron` 中，路径固定在结构体内部。构造时读取已有文件，不存在则立即创建空缓存；每次 Drop 都将全部缓存以可读 RON 格式重写，先写同目录临时文件，再原子替换。文件直接序列化完整 `RqData`，包含 `stock` 股票信息、`bar_date` 已下载日期闭区间和 `bars` 日线数组。`bars` 与 `bar_date` 的股票键一致，日线按日期严格升序、无重复且位于对应区间内，空区间用空数组保留；命中已有范围不请求上游，扩展范围只补拉缺失部分。已有股票信息会完整保留；当前数据源接口不提供股票信息查询，因此不会自动填充 `stock`。交易日历不落盘，仍转发到底层数据源。旧 `rdata.ron` 格式不自动迁移。Rust 调用方可按上面的示例自行包装，引擎本身不强制使用磁盘缓存。
+
+加载时校验股票代码、日期范围和日线顺序；缓存读取失败、损坏或数据不一致时直接报错并保留原文件；Drop 写入失败会记录错误。该文件只供一个存活的缓存实例使用，并发实例不合并数据。缓存不会自动刷新历史数据，切换数据源、复权口径或需要获取上游修订时，应删除 `rqdata.ron` 后重新下载。强制终止进程等不执行 Drop 的退出方式不会保存本次新增数据。
 
 订单显式携带 `symbol` 和包含佣金的金额预算 `cash_amount`，同日多笔订单按返回顺序执行、共享现金；超过剩余现金的订单会被拒绝并记录原因，其他订单仍可处理。当前只实现买入订单，卖出和完整调仓尚未实现。
 
@@ -132,7 +106,7 @@ async fn on_trade_day(
 
 ## 数据与成交口径
 
-- 使用 Tushare [`daily`](https://tushare.pro/document/2?doc_id=27)、[`adj_factor`](https://tushare.pro/document/2?doc_id=28)、[`trade_cal`](https://tushare.pro/document/2?doc_id=26)、[`stk_limit`](https://tushare.pro/document/2?doc_id=183)、[`stock_st`](https://tushare.pro/document/2?doc_id=397)。账号需要这些接口权限；错误会向上传递。仅拉取请求范围内的数据；跨年的历史查询按自然年分段，日期升序排列；成交量从手转为股，成交额从千元转为元。未接入市值、磁盘缓存或自动限频调度，沿用客户端已有重试机制。
+- 使用 Tushare [`daily`](https://tushare.pro/document/2?doc_id=27)、[`adj_factor`](https://tushare.pro/document/2?doc_id=28)、[`trade_cal`](https://tushare.pro/document/2?doc_id=26)、[`stk_limit`](https://tushare.pro/document/2?doc_id=183)、[`stock_st`](https://tushare.pro/document/2?doc_id=397)。账号需要这些接口权限；错误会向上传递。仅拉取请求范围内的数据；跨年的历史查询按自然年分段，日期升序排列；成交量从手转为股，成交额从千元转为元。未接入市值或自动限频调度，沿用客户端已有重试机制。
 - `StockDailyBar.st` 按交易日的 `stock_st` 名单填充，覆盖 ST 和 *ST；摘帽后为 `false`。每个非空日线分段按同一股票、日期范围查询 ST 状态，随日线缓存，空日线不额外查询。接口需要 3000 积分起，历史数据从 `20000101` 开始，因此 Tushare 日线查询不支持更早日期；权限不足或响应数据无效直接报错。
 - 策略只能查询已完成的历史日线；买入意图在开盘前产生。内置 buy and hold 为每只目标股票分配 `初始资金 × allocation / 股票数` 的独立预算，第一次可成交时买入；未成交的股票次日重试，已成交的股票不再买入，也不在期末卖出。成交价为原始开盘价加买入滑点。
 - 预算包含佣金，按 `lot_size` 向下取整，不允许融资。默认交易单位是简化的 100 股模型，尚未完整实现各板块的申报数量规则；例如科创板使用前需自行配置交易单位。佣金为成交额乘费率与最低佣金的较大值，不单独计算过户费。
