@@ -1,9 +1,11 @@
+mod tushare;
 use std::fmt::{self, Display};
 
 /// Instrument Symbol
-struct InstrSymbol {
-    id: u32,
-    tp: InstrType,
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub struct InstrSymbol {
+    pub id: u32,
+    pub tp: InstrType,
 }
 
 impl Display for InstrSymbol {
@@ -12,7 +14,8 @@ impl Display for InstrSymbol {
     }
 }
 
-enum InstrType {
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum InstrType {
     /// 上交所主板
     ShMain,
     /// 科创板
