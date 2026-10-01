@@ -1,6 +1,6 @@
 use super::Strategy;
 use crate::{
-    data::InstrSymbol,
+    data::StockSymbol,
     engine::{BtContext, Order},
 };
 use clap::Args;
@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 pub struct BuyAndHoldConfig {
     /// 目标股票，可重复指定或用逗号分隔
     #[arg(long = "symbol", required = true, value_delimiter = ',')]
-    pub symbols: Vec<InstrSymbol>,
+    pub symbols: Vec<StockSymbol>,
     /// 初始资金用于买入的比例，范围 (0, 1]
     #[arg(long, default_value_t = 1.0)]
     pub allocation: f64,

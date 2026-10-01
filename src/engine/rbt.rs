@@ -1,5 +1,5 @@
 use super::*;
-use crate::data::{Adjustment, DataProvider, InstrSymbol, MemCacheProvider};
+use crate::data::{Adjustment, DataProvider, MemCacheProvider, StockSymbol};
 use crate::strategy::Strategy;
 use anyhow::{Result, anyhow};
 use std::collections::{BTreeMap, BTreeSet};
@@ -35,9 +35,9 @@ impl BacktestEngine {
         }
         let mut symbols = BTreeSet::new();
         let mut cash = self.config.initial_cash;
-        let mut positions: BTreeMap<InstrSymbol, Position> = BTreeMap::new();
+        let mut positions: BTreeMap<StockSymbol, Position> = BTreeMap::new();
         // 每只股票独立维护复权收益单位，不能混用不同股票的因子。
-        let mut return_units: BTreeMap<InstrSymbol, f64> = BTreeMap::new();
+        let mut return_units: BTreeMap<StockSymbol, f64> = BTreeMap::new();
         let mut last_buy_dates = BTreeMap::new();
         let mut previous_equity = cash;
         let mut peak = cash;
@@ -282,7 +282,7 @@ impl BacktestEngine {
 /// 缓存属于数据源；引擎仅校验本次实际读取的数据及估值口径。
 pub(super) async fn load_bars(
     provider: &mut dyn DataProvider,
-    symbol: InstrSymbol,
+    symbol: StockSymbol,
     start: time::Date,
     end: time::Date,
     adjusted: bool,

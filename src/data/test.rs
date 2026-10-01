@@ -7,25 +7,25 @@
 use super::*;
 
 /// 六位代码 + 期望的板块；用来同时覆盖号段表与 Display。
-const CASES: &[(&str, InstrType)] = &[
-    ("600000", InstrType::ShMain),    // 浦发银行
-    ("601398", InstrType::ShMain),    // 工商银行
-    ("603259", InstrType::ShMain),    // 药明康德
-    ("605499", InstrType::ShMain),    // 东鹏饮料
-    ("688981", InstrType::ShStar),    // 中芯国际
-    ("689009", InstrType::ShStar),    // 九号公司（CDR）
-    ("000001", InstrType::SzMain),    // 平安银行
-    ("002594", InstrType::SzMain),    // 比亚迪（原中小板）
-    ("003816", InstrType::SzMain),    // 中国广核
-    ("300750", InstrType::SzChiNext), // 宁德时代
-    ("301029", InstrType::SzChiNext), // 怡合达
+const CASES: &[(&str, StockBoard)] = &[
+    ("600000", StockBoard::ShMain),    // 浦发银行
+    ("601398", StockBoard::ShMain),    // 工商银行
+    ("603259", StockBoard::ShMain),    // 药明康德
+    ("605499", StockBoard::ShMain),    // 东鹏饮料
+    ("688981", StockBoard::ShStar),    // 中芯国际
+    ("689009", StockBoard::ShStar),    // 九号公司（CDR）
+    ("000001", StockBoard::SzMain),    // 平安银行
+    ("002594", StockBoard::SzMain),    // 比亚迪（原中小板）
+    ("003816", StockBoard::SzMain),    // 中国广核
+    ("300750", StockBoard::SzChiNext), // 宁德时代
+    ("301029", StockBoard::SzChiNext), // 怡合达
 ];
 
 #[test]
 fn 裸代码按号段推断板块() {
     for (code, expected) in CASES {
-        let symbol = InstrSymbol::from(*code);
-        assert_eq!(symbol.ty, *expected, "{code} 的板块");
+        let symbol = StockSymbol::from(*code);
+        assert_eq!(symbol.board, *expected, "{code} 的板块");
         assert_eq!(symbol.id, code.parse::<u32>().unwrap(), "{code} 的 id");
     }
 }
@@ -33,10 +33,10 @@ fn 裸代码按号段推断板块() {
 #[test]
 fn 与_display_互为逆运算() {
     for (code, _) in CASES {
-        let symbol = InstrSymbol::from(*code);
+        let symbol = StockSymbol::from(*code);
         // Display 产出 "000001.XSHE" 形式，再解析须回到原值。
         assert_eq!(
-            InstrSymbol::from(symbol.to_string().as_str()),
+            StockSymbol::from(symbol.to_string().as_str()),
             symbol,
             "{code}"
         );
@@ -64,7 +64,7 @@ fn 各种写法都归一到同一形式() {
     ];
     for (input, expected) in cases {
         assert_eq!(
-            InstrSymbol::from(input).to_string(),
+            StockSymbol::from(input).to_string(),
             expected,
             "输入 {input:?}"
         );
@@ -80,8 +80,8 @@ fn 两位缩写与四位后缀解析结果相同() {
         ("300750.SZ", "300750.XSHE"),
     ] {
         assert_eq!(
-            InstrSymbol::from(short),
-            InstrSymbol::from(long),
+            StockSymbol::from(short),
+            StockSymbol::from(long),
             "{short} vs {long}"
         );
     }
@@ -91,7 +91,7 @@ fn 两位缩写与四位后缀解析结果相同() {
 fn 六位以外的位数被拒绝() {
     for bad in ["00001", "0000001", "", "0000012"] {
         assert!(
-            std::panic::catch_unwind(|| InstrSymbol::from(bad)).is_err(),
+            std::panic::catch_unwind(|| StockSymbol::from(bad)).is_err(),
             "{bad:?} 应当 panic"
         );
     }
@@ -101,7 +101,7 @@ fn 六位以外的位数被拒绝() {
 fn 非数字被拒绝() {
     for bad in ["00000A", "ABCDEF", "000-01"] {
         assert!(
-            std::panic::catch_unwind(|| InstrSymbol::from(bad)).is_err(),
+            std::panic::catch_unwind(|| StockSymbol::from(bad)).is_err(),
             "{bad:?} 应当 panic"
         );
     }
@@ -110,10 +110,10 @@ fn 非数字被拒绝() {
 #[test]
 fn 未建模的号段被拒绝() {
     // 北交所 4xxxxx / 920xxx、沪市 B 股 900xxx、深市 B 股 200xxx：
-    // Python 侧 _STOCK_PREFIXES 认这些号段，但 InstrType 还没有对应变体。
+    // Python 侧 _STOCK_PREFIXES 认这些号段，但 StockBoard 还没有对应变体。
     for bad in ["430047", "920001", "900901", "200002"] {
         assert!(
-            std::panic::catch_unwind(|| InstrSymbol::from(bad)).is_err(),
+            std::panic::catch_unwind(|| StockSymbol::from(bad)).is_err(),
             "{bad:?} 应当 panic"
         );
     }
@@ -134,7 +134,7 @@ fn 后缀与号段矛盾时被拒绝() {
         "000300.INDX",
     ] {
         assert!(
-            std::panic::catch_unwind(|| InstrSymbol::from(bad)).is_err(),
+            std::panic::catch_unwind(|| StockSymbol::from(bad)).is_err(),
             "{bad:?} 应当 panic"
         );
     }

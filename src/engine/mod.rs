@@ -1,6 +1,6 @@
 mod rbt;
 
-use crate::data::{DataProvider, InstrSymbol, StockDailyBar};
+use crate::data::{DataProvider, StockDailyBar, StockSymbol};
 use crate::utils::{latest_rqdate, parse_date};
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser};
@@ -82,7 +82,7 @@ pub struct BtContext<'a> {
     pub cash: f64,
     /// 上一交易日收盘权益；首日为初始资金。
     pub equity: f64,
-    pub positions: &'a BTreeMap<InstrSymbol, Position>,
+    pub positions: &'a BTreeMap<StockSymbol, Position>,
     provider: tokio::sync::Mutex<&'a mut dyn DataProvider>,
     adjust_returns: bool,
 }
@@ -92,7 +92,7 @@ impl BtContext<'_> {
         self.date
     }
 
-    pub fn position(&self, symbol: InstrSymbol) -> Option<&Position> {
+    pub fn position(&self, symbol: StockSymbol) -> Option<&Position> {
         self.positions.get(&symbol)
     }
 
@@ -101,7 +101,7 @@ impl BtContext<'_> {
     }
 
     /// 查询任意股票指定区间的已完成日线；允许查询回测开始日之前的数据。
-    pub async fn history(&self, symbol: InstrSymbol, start: Date, end: Date) -> Vec<StockDailyBar> {
+    pub async fn history(&self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockDailyBar> {
         assert!(
             start <= end && end < self.date,
             "历史查询区间无效或包含当日及未来数据"
@@ -110,7 +110,7 @@ impl BtContext<'_> {
         rbt::load_bars(&mut **provider, symbol, start, end, self.adjust_returns).await
     }
 
-    pub async fn bar(&self, symbol: InstrSymbol, date: Date) -> Result<Option<StockDailyBar>> {
+    pub async fn bar(&self, symbol: StockSymbol, date: Date) -> Result<Option<StockDailyBar>> {
         Ok(self.history(symbol, date, date).await.into_iter().next())
     }
 }
@@ -119,11 +119,11 @@ impl BtContext<'_> {
 pub enum Order {
     /// 为指定股票买入，金额预算包含佣金。预算超过剩余现金时拒绝该笔订单。
     Buy {
-        symbol: InstrSymbol,
+        symbol: StockSymbol,
         cash_amount: f64,
     },
     /// 清仓指定股票；当天买入过该股票时拒绝清仓。
-    SellAll { symbol: InstrSymbol },
+    SellAll { symbol: StockSymbol },
 }
 
 /// 按股票独立记录持仓，估值口径由 BacktestConfig::adjust_returns 决定。

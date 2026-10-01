@@ -1,6 +1,6 @@
 use super::Strategy;
 use crate::{
-    data::{Adjustment, InstrSymbol, StockDailyBar},
+    data::{Adjustment, StockDailyBar, StockSymbol},
     engine::{BtContext, Order},
 };
 use clap::Args;
@@ -11,7 +11,7 @@ use time::Date;
 pub struct MaCrossConfig {
     /// 目标股票，可重复指定或用逗号分隔
     #[arg(long = "symbol", required = true, value_delimiter = ',')]
-    pub symbols: Vec<InstrSymbol>,
+    pub symbols: Vec<StockSymbol>,
     /// 短期 SMA 周期，按有日线的交易日计数
     #[arg(long, default_value_t = 5)]
     pub short: usize,
@@ -52,7 +52,7 @@ struct SignalState {
 /// 信号在下一次开盘交易；未成交时维持目标，直到出现反向交叉。
 pub struct MaCross {
     config: MaCrossConfig,
-    states: BTreeMap<InstrSymbol, SignalState>,
+    states: BTreeMap<StockSymbol, SignalState>,
     next_history_date: Option<Date>,
 }
 

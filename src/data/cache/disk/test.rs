@@ -3,7 +3,7 @@ use crate::data::{Adjustment, Stock};
 use std::sync::{Arc, Mutex};
 use time::macros::date;
 
-type Requests = Arc<Mutex<Vec<(InstrSymbol, Date, Date)>>>;
+type Requests = Arc<Mutex<Vec<(StockSymbol, Date, Date)>>>;
 
 struct Provider {
     bars: Vec<StockDailyBar>,
@@ -18,7 +18,7 @@ impl DataProvider for Provider {
 
     async fn daily_bars(
         &mut self,
-        symbol: InstrSymbol,
+        symbol: StockSymbol,
         start: Date,
         end: Date,
     ) -> Vec<StockDailyBar> {
@@ -44,7 +44,7 @@ async fn drop保存并在重建后命中日线缓存() {
     let path = dir.path().join(DiskCacheProvider::FILE_NAME);
     let start = date!(2024 - 01 - 02);
     let end = date!(2024 - 01 - 05);
-    let symbol = InstrSymbol::from("000001.SZ");
+    let symbol = StockSymbol::from("000001.SZ");
     let bars: Vec<_> = [
         None,
         Some(Adjustment::Raw(1.23)),
@@ -133,8 +133,8 @@ async fn 空区间跨实例保留且只补拉两端和新股票() {
     let path = dir.path().join(DiskCacheProvider::FILE_NAME);
     let start = date!(2024 - 01 - 02);
     let end = date!(2024 - 01 - 05);
-    let symbol = InstrSymbol::from("000001.SZ");
-    let other = InstrSymbol::from("600000.SH");
+    let symbol = StockSymbol::from("000001.SZ");
+    let other = StockSymbol::from("600000.SH");
     let requests = Requests::default();
     {
         let mut cache =
@@ -194,7 +194,7 @@ fn 损坏或旧格式时保留原文件() {
     }
 }
 
-fn bar(symbol: InstrSymbol, date: Date) -> StockDailyBar {
+fn bar(symbol: StockSymbol, date: Date) -> StockDailyBar {
     StockDailyBar {
         symbol,
         date,
@@ -216,7 +216,7 @@ fn bar(symbol: InstrSymbol, date: Date) -> StockDailyBar {
 async fn 两端补拉后所有日线有序且完整保存() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(DiskCacheProvider::FILE_NAME);
-    let symbol = InstrSymbol::from("000001.SZ");
+    let symbol = StockSymbol::from("000001.SZ");
     let first = date!(2024 - 01 - 01);
     let middle = date!(2024 - 01 - 03);
     let last = date!(2024 - 01 - 05);
@@ -260,7 +260,7 @@ async fn 两端补拉后所有日线有序且完整保存() {
 fn 拒绝区间不一致或无序重复日线且保留文件() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(DiskCacheProvider::FILE_NAME);
-    let symbol = InstrSymbol::from("000001.SZ");
+    let symbol = StockSymbol::from("000001.SZ");
     let first = date!(2024 - 01 - 02);
     let last = date!(2024 - 01 - 03);
     for case in 0..7 {

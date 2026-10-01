@@ -51,14 +51,14 @@ pub use table::{Column, Row, Table};
 // 这里重导出，让 `rquant::data::tushare::params!` 这个更收敛的路径也可用。
 pub use crate::params;
 
-use super::{InstrSymbol, InstrType};
+use super::{StockBoard, StockSymbol};
 
 /// 将通用股票代码转换为 Tushare 格式，例如 `000001.SZ`。
-impl InstrSymbol {
+impl StockSymbol {
     pub fn tushare_code(self) -> String {
-        let suffix = match self.ty {
-            InstrType::ShMain | InstrType::ShStar => "SH",
-            InstrType::SzMain | InstrType::SzChiNext => "SZ",
+        let suffix = match self.board {
+            StockBoard::ShMain | StockBoard::ShStar => "SH",
+            StockBoard::SzMain | StockBoard::SzChiNext => "SZ",
         };
         format!("{:06}.{suffix}", self.id)
     }

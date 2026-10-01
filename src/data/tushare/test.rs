@@ -10,7 +10,7 @@
 //! ```
 
 use super::provider::{is_rate_limited, is_retryable};
-use crate::data::{DataProvider, InstrSymbol};
+use crate::data::{DataProvider, StockSymbol};
 use crate::engine::{BacktestConfig, BacktestEngine};
 use crate::strategy::{BuyAndHold, BuyAndHoldConfig};
 use crate::utils::parse_date;
@@ -649,7 +649,7 @@ async fn missing_factor_fails_instead_of_silently_switching_to_raw_returns() {
     fixture(&server, json!([["000001.SZ", "20240102", 2]])).await;
     provider(&server)
         .daily_bars(
-            InstrSymbol::from("000001"),
+            StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
         )
@@ -668,7 +668,7 @@ async fn duplicate_dates_and_foreign_symbols_are_rejected() {
         let err = tokio::spawn(async move {
             provider(&server)
                 .daily_bars(
-                    InstrSymbol::from("000001"),
+                    StockSymbol::from("000001"),
                     parse_date("20240101").unwrap(),
                     parse_date("20240104").unwrap(),
                 )
@@ -750,7 +750,7 @@ async fn requests_non_overlapping_year_chunks_without_truncating_history() {
         .await;
     let bars = provider
         .daily_bars(
-            InstrSymbol::from("000001"),
+            StockSymbol::from("000001"),
             parse_date("20231229").unwrap(),
             parse_date("20240102").unwrap(),
         )
@@ -768,7 +768,7 @@ async fn empty_daily_query_returns_no_bars() {
     response(&server, "daily", &[], json!([])).await;
     let bars = provider(&server)
         .daily_bars(
-            InstrSymbol::from("000001"),
+            StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
         )
@@ -790,7 +790,7 @@ async fn upstream_permission_error_propagates_to_caller() {
         .await;
     provider(&server)
         .daily_bars(
-            InstrSymbol::from("000001"),
+            StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
         )
@@ -847,7 +847,7 @@ async fn lazy_engine_downloads_full_backtest_range_once() {
     .run(
         Box::new(provider(&server)),
         Box::new(BuyAndHold::new(BuyAndHoldConfig {
-            symbols: vec![InstrSymbol::from("000001")],
+            symbols: vec![StockSymbol::from("000001")],
             allocation: 1.0,
         })),
     )
@@ -879,7 +879,7 @@ async fn st_status_is_joined_by_date_without_carrying_it_forward() {
     .await;
     let bars = provider(&server)
         .daily_bars(
-            InstrSymbol::from("000001"),
+            StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
         )
@@ -927,7 +927,7 @@ async fn invalid_st_rows_are_rejected() {
         let err = tokio::spawn(async move {
             provider(&server)
                 .daily_bars(
-                    InstrSymbol::from("000001"),
+                    StockSymbol::from("000001"),
                     parse_date("20240101").unwrap(),
                     parse_date("20240104").unwrap(),
                 )
@@ -958,7 +958,7 @@ async fn st_permission_failure_is_not_treated_as_non_st() {
         .await;
     provider(&server)
         .daily_bars(
-            InstrSymbol::from("000001"),
+            StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
         )
@@ -971,7 +971,7 @@ async fn dates_before_st_coverage_are_rejected() {
     let server = MockServer::start().await;
     provider(&server)
         .daily_bars(
-            InstrSymbol::from("000001"),
+            StockSymbol::from("000001"),
             parse_date("19991231").unwrap(),
             parse_date("20000104").unwrap(),
         )

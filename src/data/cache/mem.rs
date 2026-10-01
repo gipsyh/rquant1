@@ -1,4 +1,4 @@
-use crate::data::{DataProvider, InstrSymbol, RqData, StockDailyBar};
+use crate::data::{DataProvider, RqData, StockDailyBar, StockSymbol};
 use time::Date;
 
 /// 每次回测独立创建；首次访问股票时加载整个配置区间，销毁时释放缓存。
@@ -23,7 +23,7 @@ impl MemCacheProvider {
 
     async fn download(
         &mut self,
-        symbol: InstrSymbol,
+        symbol: StockSymbol,
         start: Date,
         end: Date,
     ) -> Vec<StockDailyBar> {
@@ -47,7 +47,7 @@ impl DataProvider for MemCacheProvider {
 
     async fn daily_bars(
         &mut self,
-        symbol: InstrSymbol,
+        symbol: StockSymbol,
         start: Date,
         end: Date,
     ) -> Vec<StockDailyBar> {

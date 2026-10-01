@@ -1,5 +1,5 @@
 use super::mem::MemCacheProvider;
-use crate::data::{DataProvider, InstrSymbol, RqData, StockDailyBar};
+use crate::data::{DataProvider, RqData, StockDailyBar, StockSymbol};
 use anyhow::{Context, Result, ensure};
 use std::{io::Write, path::PathBuf};
 use time::Date;
@@ -106,7 +106,7 @@ impl DataProvider for DiskCacheProvider {
 
     async fn daily_bars(
         &mut self,
-        symbol: InstrSymbol,
+        symbol: StockSymbol,
         start: Date,
         end: Date,
     ) -> Vec<StockDailyBar> {
