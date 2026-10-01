@@ -5,7 +5,7 @@ mod index;
 mod test;
 pub mod tushare;
 
-use crate::utils::DateRange;
+use crate::{data::index::Index, utils::DateRange};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -186,6 +186,8 @@ pub struct RqData {
     /// 与 bar_date 具有相同的股票键；日线按日期严格升序且位于对应闭区间内。
     /// 已查询但没有日线的区间用空 Vec 表示。
     stock_bars: HashMap<StockSymbol, Vec<StockDailyBar>>,
+    /// 指数
+    index: HashMap<String, Index>,
 }
 
 /// 交易日历与股票行情独立查询

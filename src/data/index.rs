@@ -1,20 +1,24 @@
 use crate::{data::StockSymbol, utils::DateRange};
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
 use time::Date;
 
+#[derive(Serialize, Deserialize)]
 pub struct Index {
+    /// 指数代码
+    pub symbol: String,
     /// 指数名称
     pub name: String,
-    /// 上市日期
-    pub listed: Date,
-    /// 退市日
-    pub delisted: Option<Date>,
+    /// 指数历史成分
+    pub comp: IndexHistComp,
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct IndexComp {
     weight: HashMap<StockSymbol, f32>,
 }
 /// Index History Composition
+#[derive(Serialize, Deserialize)]
 pub struct IndexHistComp {
     /// 指数成分历史覆盖的日期闭区间
     range: DateRange,
