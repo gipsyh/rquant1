@@ -38,6 +38,7 @@
 //! 整数 `1`，而 `daily_basic.circ_mv` 返回的是浮点。取值时按字段口径选
 //! [`Column::as_i64`] 或 [`Column::as_f64`]；[`Column::as_bool`] 已兼容 `1`/`0`。
 
+mod index;
 mod provider;
 mod table;
 

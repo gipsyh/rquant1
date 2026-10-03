@@ -1,10 +1,10 @@
 use super::mem::MemCacheProvider;
-use crate::data::{DataProvider, RqData, StockDailyBar, StockSymbol};
+use crate::data::{DataProvider, IndexHistComp, RqData, StockDailyBar, StockSymbol};
 use anyhow::{Context, Result, ensure};
 use std::{io::Write, path::PathBuf};
 use time::Date;
 
-/// 组合 `MemCacheProvider` 复用查询和区间补拉逻辑，增加跨回测日线持久化。
+/// 组合 `MemCacheProvider` 复用查询和区间补拉逻辑，增加跨回测日线与指数成分持久化。
 /// 交易日历仍由底层数据源提供。
 ///
 /// 构造时读取当前工作目录的 `rqdata.ron`，不存在则创建空缓存；
@@ -18,7 +18,7 @@ pub struct DiskCacheProvider {
 impl DiskCacheProvider {
     const FILE_NAME: &str = "rqdata.ron";
 
-    /// 首次访问未缓存股票时预取 `start..=end`，请求更宽时自动补拉。
+    /// 首次访问未缓存股票或指数时预取 `start..=end`，请求更宽时自动补拉。
     /// 缓存读取失败、损坏或数据不一致时 panic，保留原文件。
     pub fn new(provider: Box<dyn DataProvider>, start: Date, end: Date) -> Self {
         let path = std::env::current_dir()
@@ -60,6 +60,24 @@ impl DiskCacheProvider {
                             && bars.windows(2).all(|pair| pair[0].date < pair[1].date),
                         "缓存行情无效: {symbol} 的日期范围、股票代码或日期顺序不正确"
                     );
+                }
+                for (symbol, index) in &data.index {
+                    ensure!(
+                        !index.name.trim().is_empty(),
+                        "缓存指数名称不能为空: {symbol}"
+                    );
+                    ensure!(
+                        index.symbol == *symbol,
+                        "缓存指数信息无效: 指数代码与键不匹配"
+                    );
+                    ensure!(
+                        crate::data::index::normalize_index_symbol(symbol)? == *symbol,
+                        "缓存指数代码未规范化: {symbol}"
+                    );
+                    index
+                        .comp
+                        .validate()
+                        .with_context(|| format!("缓存指数成分无效: {symbol}"))?;
                 }
                 inner.data = data;
                 true
@@ -109,6 +127,14 @@ impl DataProvider for DiskCacheProvider {
         end: Date,
     ) -> Vec<StockDailyBar> {
         self.inner.daily_bars(symbol, start, end).await
+    }
+
+    async fn index_name(&mut self, symbol: &str) -> String {
+        self.inner.index_name(symbol).await
+    }
+
+    async fn index_comp(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
+        self.inner.index_comp(symbol, start, end).await
     }
 }
 

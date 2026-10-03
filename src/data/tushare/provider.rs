@@ -1,7 +1,7 @@
 //! Tushare 数据源：HTTP 接口调用、重试与日线数据组装。
 
 use super::table::Table;
-use crate::data::{Adjustment, DataProvider, StockDailyBar, StockSymbol};
+use crate::data::{Adjustment, DataProvider, IndexHistComp, StockDailyBar, StockSymbol};
 use crate::utils::parse_date;
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -370,7 +370,7 @@ struct ResponseData {
     items: Vec<Vec<Value>>,
 }
 
-fn api_date(date: Date) -> String {
+pub(super) fn api_date(date: Date) -> String {
     date.format(format_description!("[year][month][day]"))
         .expect("date format")
 }
@@ -427,6 +427,18 @@ fn check_row(code: &str, expected: &str, date: Date, start: Date, end: Date) {
 
 #[async_trait::async_trait]
 impl DataProvider for TushareProvider {
+    async fn index_name(&mut self, symbol: &str) -> String {
+        self.fetch_index_name(symbol)
+            .await
+            .unwrap_or_else(|err| panic!("指数名称查询失败: {err:#}"))
+    }
+
+    async fn index_comp(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
+        self.fetch_index_comp(symbol, start, end)
+            .await
+            .unwrap_or_else(|err| panic!("指数成分查询失败: {err:#}"))
+    }
+
     async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date> {
         assert!(start <= end, "开始日期不能晚于结束日期");
         let mut calendar = BTreeMap::new();

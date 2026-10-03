@@ -1,11 +1,12 @@
 mod cache;
 pub use cache::{DiskCacheProvider, MemCacheProvider};
 mod index;
+pub use index::{Index, IndexComp, IndexHistComp};
 #[cfg(test)]
 mod test;
 pub mod tushare;
 
-use crate::{data::index::Index, utils::DateRange};
+use crate::utils::DateRange;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -203,4 +204,12 @@ pub trait DataProvider: Send + Sync {
         start: Date,
         end: Date,
     ) -> Vec<StockDailyBar>;
+
+    /// 查询指数名称，必须非空；查询失败或指数不存在时 panic。
+    async fn index_name(&mut self, symbol: &str) -> String;
+
+    /// 查询指数在闭区间内的成分历史；可包含起点前已生效的基准快照。
+    /// 返回范围为 `start..=end`，通过 `composition(date)` 取当天成分。
+    /// 没有快照时返回空历史，当天查询会报错；数据源失败沿用日线接口的 panic 约定。
+    async fn index_comp(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp;
 }

@@ -1,9 +1,13 @@
-use crate::data::{DataProvider, RqData, StockDailyBar, StockSymbol};
+use crate::data::index::normalize_index_symbol;
+use crate::data::{DataProvider, Index, IndexHistComp, RqData, StockDailyBar, StockSymbol};
 use crate::utils::DateRange;
 use time::Date;
 
-/// 每次回测独立创建；首次访问股票时加载整个配置区间，销毁时释放缓存。
-/// 仅缓存日线，交易日历直接转发给底层数据源。
+#[cfg(test)]
+pub(crate) mod test;
+
+/// 每次回测独立创建；首次访问股票或指数时加载整个配置区间，销毁时释放缓存。
+/// 缓存日线和指数成分，交易日历直接转发给底层数据源。
 pub struct MemCacheProvider {
     provider: Box<dyn DataProvider>,
     start: Date,
@@ -12,6 +16,18 @@ pub struct MemCacheProvider {
 }
 
 impl MemCacheProvider {
+    async fn download_index(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
+        let comp = self.provider.index_comp(symbol, start, end).await;
+        assert_eq!(
+            comp.range(),
+            DateRange::new(start, end),
+            "指数成分覆盖区间不匹配"
+        );
+        comp.validate()
+            .unwrap_or_else(|err| panic!("指数成分无效: {symbol}: {err:#}"));
+        comp
+    }
+
     pub fn new(provider: Box<dyn DataProvider>, start: Date, end: Date) -> Self {
         assert!(start <= end, "缓存开始日期不能晚于结束日期");
         Self {
@@ -93,5 +109,48 @@ impl DataProvider for MemCacheProvider {
         let first = bars.partition_point(|bar| bar.date < start);
         let last = bars.partition_point(|bar| bar.date <= end);
         bars[first..last].to_vec()
+    }
+
+    async fn index_name(&mut self, symbol: &str) -> String {
+        let symbol = normalize_index_symbol(symbol).unwrap_or_else(|err| panic!("{err:#}"));
+        if let Some(index) = self.data.index.get(&symbol) {
+            return index.name.clone();
+        }
+        let name = self.provider.index_name(&symbol).await;
+        assert!(!name.trim().is_empty(), "指数名称不能为空: {symbol}");
+        name
+    }
+
+    async fn index_comp(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
+        assert!(start <= end, "查询开始日期不能晚于结束日期");
+        let symbol = normalize_index_symbol(symbol).unwrap_or_else(|err| panic!("{err:#}"));
+        if let Some(range) = self.data.index.get(&symbol).map(|index| index.comp.range()) {
+            if start < range.start() {
+                let comp = self
+                    .download_index(&symbol, start, range.start().previous_day().unwrap())
+                    .await;
+                self.data.index.get_mut(&symbol).unwrap().comp.extend(comp);
+            }
+            if end > range.end() {
+                let comp = self
+                    .download_index(&symbol, range.end().next_day().unwrap(), end)
+                    .await;
+                self.data.index.get_mut(&symbol).unwrap().comp.extend(comp);
+            }
+        } else {
+            let name = self.index_name(&symbol).await;
+            let comp = self
+                .download_index(&symbol, self.start.min(start), self.end.max(end))
+                .await;
+            self.data.index.insert(
+                symbol.clone(),
+                Index {
+                    symbol: symbol.clone(),
+                    name,
+                    comp,
+                },
+            );
+        }
+        self.data.index[&symbol].comp.slice(start, end).unwrap()
     }
 }

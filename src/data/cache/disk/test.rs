@@ -6,6 +6,87 @@ use time::macros::date;
 
 type Requests = Arc<Mutex<Vec<(StockSymbol, Date, Date)>>>;
 
+#[tokio::test]
+async fn index_history_persists_and_reloads_without_downloading() {
+    use crate::data::cache::mem::test::{IndexProvider, Requests as IndexRequests, history};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.ron");
+    let requests = IndexRequests::default();
+    let name_requests = Arc::new(Mutex::new(Vec::new()));
+    let start = date!(2024 - 01 - 01);
+    let end = date!(2024 - 03 - 31);
+    for _ in 0..2 {
+        let mut cache = DiskCacheProvider::with_path(
+            Box::new(IndexProvider {
+                name: "沪深300",
+                name_requests: name_requests.clone(),
+                requests: requests.clone(),
+                hist: history(),
+            }),
+            start,
+            end,
+            path.clone(),
+        )
+        .unwrap();
+        let comp = cache.index_comp("000300.SH", start, end).await;
+        assert_eq!(comp, history().slice(start, end).unwrap());
+        let index = cache.inner.data.index.get_mut("000300.XSHG").unwrap();
+        assert_eq!(index.symbol, "000300.XSHG");
+        assert_eq!(index.name, "沪深300");
+        assert_eq!(cache.index_name("000300.SH").await, "沪深300");
+    }
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert_eq!(*name_requests.lock().unwrap(), vec!["000300.XSHG"]);
+}
+
+#[test]
+fn invalid_index_cache_is_rejected_and_original_file_is_preserved() {
+    use crate::data::{Index, cache::mem::test::history};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("index.ron");
+    for case in 0..5 {
+        let mut data = RqData::default();
+        let symbol = if case == 0 {
+            "000905.XSHG"
+        } else {
+            "000300.XSHG"
+        };
+        let key = if case == 1 {
+            "000300.SH"
+        } else {
+            "000300.XSHG"
+        };
+        data.index.insert(
+            key.into(),
+            Index {
+                symbol: symbol.into(),
+                name: match case {
+                    3 => "",
+                    4 => "  ",
+                    _ => "沪深300",
+                }
+                .into(),
+                comp: history(),
+            },
+        );
+        let mut text = ron::to_string(&data).unwrap();
+        if case == 2 {
+            // 生效日移到覆盖范围以外，加载时必须拒绝。
+            assert!(text.contains("2024-03-25"));
+            text = text.replace("2024-03-25", "2025-03-25");
+        }
+        std::fs::write(&path, &text).unwrap();
+        let result = DiskCacheProvider::with_path(
+            provider(vec![], &Requests::default()),
+            date!(2024 - 01 - 01),
+            date!(2024 - 03 - 31),
+            path.clone(),
+        );
+        assert!(result.is_err(), "case {case}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+    }
+}
+
 struct Provider {
     bars: Vec<StockDailyBar>,
     requests: Requests,
@@ -13,6 +94,14 @@ struct Provider {
 
 #[async_trait::async_trait]
 impl DataProvider for Provider {
+    async fn index_name(&mut self, _symbol: &str) -> String {
+        panic!("本测试数据源不提供指数名称")
+    }
+
+    async fn index_comp(&mut self, _symbol: &str, _start: Date, _end: Date) -> IndexHistComp {
+        panic!("本测试数据源不提供指数成分")
+    }
+
     async fn trading_days(&mut self, start: Date, _end: Date) -> Vec<Date> {
         vec![start]
     }
