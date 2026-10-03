@@ -1,6 +1,6 @@
 use super::Strategy;
 use crate::{
-    data::{Adjustment, StockDailyBar, StockSymbol},
+    data::{Adjustment, StockBar, StockSymbol},
     engine::{BtContext, Order},
 };
 use clap::Args;
@@ -43,7 +43,7 @@ impl MaCrossConfig {
 
 #[derive(Default)]
 struct SignalState {
-    bars: VecDeque<StockDailyBar>,
+    bars: VecDeque<StockBar>,
     // None 表示尚未发生交叉；不能仅因初始短均线较高就买入。
     target_long: Option<bool>,
 }
@@ -67,16 +67,11 @@ impl MaCross {
     }
 }
 
-fn crossover(
-    bars: &VecDeque<StockDailyBar>,
-    short: usize,
-    long: usize,
-    adjusted: bool,
-) -> Option<bool> {
+fn crossover(bars: &VecDeque<StockBar>, short: usize, long: usize, adjusted: bool) -> Option<bool> {
     if bars.len() < long + 1 {
         return None;
     }
-    let factor = |bar: &StockDailyBar| match (adjusted, bar.adjustment) {
+    let factor = |bar: &StockBar| match (adjusted, bar.adjustment) {
         (true, Some(Adjustment::Raw(f))) => f,
         _ => 1.0,
     };

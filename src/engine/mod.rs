@@ -1,6 +1,6 @@
 mod rbt;
 
-use crate::data::{DataProvider, StockDailyBar, StockSymbol};
+use crate::data::{DataProvider, StockBar, StockSymbol};
 use crate::utils::{latest_rqdate, parse_date};
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser};
@@ -101,7 +101,7 @@ impl BtContext<'_> {
     }
 
     /// 查询任意股票指定区间的已完成日线；允许查询回测开始日之前的数据。
-    pub async fn history(&self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockDailyBar> {
+    pub async fn history(&self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
         assert!(
             start <= end && end < self.date,
             "历史查询区间无效或包含当日及未来数据"
@@ -110,7 +110,7 @@ impl BtContext<'_> {
         rbt::load_bars(&mut **provider, symbol, start, end, self.adjust_returns).await
     }
 
-    pub async fn bar(&self, symbol: StockSymbol, date: Date) -> Result<Option<StockDailyBar>> {
+    pub async fn bar(&self, symbol: StockSymbol, date: Date) -> Result<Option<StockBar>> {
         Ok(self.history(symbol, date, date).await.into_iter().next())
     }
 }

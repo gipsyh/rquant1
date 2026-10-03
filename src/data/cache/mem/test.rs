@@ -31,12 +31,7 @@ impl DataProvider for IndexProvider {
         unreachable!()
     }
 
-    async fn daily_bars(
-        &mut self,
-        _symbol: StockSymbol,
-        _start: Date,
-        _end: Date,
-    ) -> Vec<StockDailyBar> {
+    async fn stock_bar(&mut self, _symbol: StockSymbol, _start: Date, _end: Date) -> Vec<StockBar> {
         unreachable!()
     }
 }

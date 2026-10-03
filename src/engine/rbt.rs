@@ -216,7 +216,7 @@ impl BacktestEngine {
         })
     }
 
-    fn sell(&self, bar: Option<&StockDailyBar>, units: f64) -> Result<(f64, f64, f64, f64)> {
+    fn sell(&self, bar: Option<&StockBar>, units: f64) -> Result<(f64, f64, f64, f64)> {
         let bar = bar.ok_or_else(|| anyhow!("无当日日线（可能停牌或尚未上市）"))?;
         if bar.volume <= 0.0 {
             return Err(anyhow!("成交量为零"));
@@ -242,7 +242,7 @@ impl BacktestEngine {
         Ok((price, notional, commission, stamp_tax))
     }
 
-    fn buy(&self, bar: Option<&StockDailyBar>, budget: f64) -> Result<(u64, f64, f64)> {
+    fn buy(&self, bar: Option<&StockBar>, budget: f64) -> Result<(u64, f64, f64)> {
         let bar = bar.ok_or_else(|| anyhow!("无当日日线（可能停牌或尚未上市）"))?;
         if bar.volume <= 0.0 {
             return Err(anyhow!("成交量为零"));
@@ -286,15 +286,15 @@ pub(super) async fn load_bars(
     start: time::Date,
     end: time::Date,
     adjusted: bool,
-) -> Vec<StockDailyBar> {
-    let bars = provider.daily_bars(symbol, start, end).await;
+) -> Vec<StockBar> {
+    let bars = provider.stock_bar(symbol, start, end).await;
     for bar in &bars {
         validate_bar(bar, adjusted).unwrap();
     }
     bars
 }
 
-fn factor(bar: &StockDailyBar, adjusted: bool) -> f64 {
+fn factor(bar: &StockBar, adjusted: bool) -> f64 {
     if adjusted && let Some(Adjustment::Raw(factor)) = bar.adjustment {
         factor
     } else {
@@ -302,7 +302,7 @@ fn factor(bar: &StockDailyBar, adjusted: bool) -> f64 {
     }
 }
 
-pub(super) fn validate_bar(bar: &StockDailyBar, adjusted: bool) -> Result<()> {
+pub(super) fn validate_bar(bar: &StockBar, adjusted: bool) -> Result<()> {
     let prices = [bar.open, bar.high, bar.low, bar.close];
     if prices.iter().any(|v| !v.is_finite() || *v <= 0.0)
         || bar.low > bar.open.min(bar.close)

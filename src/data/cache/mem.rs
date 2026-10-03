@@ -1,5 +1,5 @@
 use crate::data::index::normalize_index_symbol;
-use crate::data::{DataProvider, Index, IndexHistComp, RqData, StockDailyBar, StockSymbol};
+use crate::data::{DataProvider, Index, IndexHistComp, RqData, StockBar, StockSymbol};
 use crate::utils::DateRange;
 use time::Date;
 
@@ -38,13 +38,8 @@ impl MemCacheProvider {
         }
     }
 
-    async fn download(
-        &mut self,
-        symbol: StockSymbol,
-        start: Date,
-        end: Date,
-    ) -> Vec<StockDailyBar> {
-        let mut bars = self.provider.daily_bars(symbol, start, end).await;
+    async fn download(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
+        let mut bars = self.provider.stock_bar(symbol, start, end).await;
         bars.sort_unstable_by_key(|bar| bar.date);
         assert!(
             bars.iter()
@@ -62,12 +57,7 @@ impl DataProvider for MemCacheProvider {
         self.provider.trading_days(start, end).await
     }
 
-    async fn daily_bars(
-        &mut self,
-        symbol: StockSymbol,
-        start: Date,
-        end: Date,
-    ) -> Vec<StockDailyBar> {
+    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
         assert!(start <= end, "查询开始日期不能晚于结束日期");
         if let Some(&range) = self.data.stock_bar_date.get(&symbol) {
             let (cached_start, cached_end) = (range.start(), range.end());

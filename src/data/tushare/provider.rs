@@ -1,7 +1,7 @@
 //! Tushare 数据源：HTTP 接口调用、重试与日线数据组装。
 
 use super::table::Table;
-use crate::data::{Adjustment, DataProvider, IndexHistComp, StockDailyBar, StockSymbol};
+use crate::data::{Adjustment, DataProvider, IndexHistComp, StockBar, StockSymbol};
 use crate::utils::parse_date;
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -480,12 +480,7 @@ impl DataProvider for TushareProvider {
         calendar.into_keys().collect()
     }
 
-    async fn daily_bars(
-        &mut self,
-        symbol: StockSymbol,
-        start: Date,
-        end: Date,
-    ) -> Vec<StockDailyBar> {
+    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
         assert!(start <= end, "开始日期不能晚于结束日期");
         assert!(
             start >= time::macros::date!(2000 - 01 - 01),
@@ -576,7 +571,7 @@ impl DataProvider for TushareProvider {
                     insert_unique(
                         &mut bars,
                         date,
-                        StockDailyBar {
+                        StockBar {
                             symbol,
                             date,
                             open: row.open,

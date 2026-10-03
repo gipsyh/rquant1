@@ -648,7 +648,7 @@ async fn missing_factor_fails_instead_of_silently_switching_to_raw_returns() {
     let server = MockServer::start().await;
     fixture(&server, json!([["000001.SZ", "20240102", 2]])).await;
     provider(&server)
-        .daily_bars(
+        .stock_bar(
             StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
@@ -667,7 +667,7 @@ async fn duplicate_dates_and_foreign_symbols_are_rejected() {
         fixture(&server, factors).await;
         let err = tokio::spawn(async move {
             provider(&server)
-                .daily_bars(
+                .stock_bar(
                     StockSymbol::from("000001"),
                     parse_date("20240101").unwrap(),
                     parse_date("20240104").unwrap(),
@@ -749,7 +749,7 @@ async fn requests_non_overlapping_year_chunks_without_truncating_history() {
         )
         .await;
     let bars = provider
-        .daily_bars(
+        .stock_bar(
             StockSymbol::from("000001"),
             parse_date("20231229").unwrap(),
             parse_date("20240102").unwrap(),
@@ -767,7 +767,7 @@ async fn empty_daily_query_returns_no_bars() {
     let server = MockServer::start().await;
     response(&server, "daily", &[], json!([])).await;
     let bars = provider(&server)
-        .daily_bars(
+        .stock_bar(
             StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
@@ -789,7 +789,7 @@ async fn upstream_permission_error_propagates_to_caller() {
         .mount(&server)
         .await;
     provider(&server)
-        .daily_bars(
+        .stock_bar(
             StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
@@ -878,7 +878,7 @@ async fn st_status_is_joined_by_date_without_carrying_it_forward() {
     )
     .await;
     let bars = provider(&server)
-        .daily_bars(
+        .stock_bar(
             StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
@@ -926,7 +926,7 @@ async fn invalid_st_rows_are_rejected() {
         .await;
         let err = tokio::spawn(async move {
             provider(&server)
-                .daily_bars(
+                .stock_bar(
                     StockSymbol::from("000001"),
                     parse_date("20240101").unwrap(),
                     parse_date("20240104").unwrap(),
@@ -957,7 +957,7 @@ async fn st_permission_failure_is_not_treated_as_non_st() {
         .mount(&server)
         .await;
     provider(&server)
-        .daily_bars(
+        .stock_bar(
             StockSymbol::from("000001"),
             parse_date("20240101").unwrap(),
             parse_date("20240104").unwrap(),
@@ -970,7 +970,7 @@ async fn st_permission_failure_is_not_treated_as_non_st() {
 async fn dates_before_st_coverage_are_rejected() {
     let server = MockServer::start().await;
     provider(&server)
-        .daily_bars(
+        .stock_bar(
             StockSymbol::from("000001"),
             parse_date("19991231").unwrap(),
             parse_date("20000104").unwrap(),

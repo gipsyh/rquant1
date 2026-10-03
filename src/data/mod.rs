@@ -142,7 +142,7 @@ pub enum Adjustment {
 
 /// 个股日线
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct StockDailyBar {
+pub struct StockBar {
     /// 股票代码
     pub symbol: StockSymbol,
     /// 交易日
@@ -186,7 +186,7 @@ pub struct RqData {
     stock_bar_date: HashMap<StockSymbol, DateRange>,
     /// 与 bar_date 具有相同的股票键；日线按日期严格升序且位于对应闭区间内。
     /// 已查询但没有日线的区间用空 Vec 表示。
-    stock_bars: HashMap<StockSymbol, Vec<StockDailyBar>>,
+    stock_bars: HashMap<StockSymbol, Vec<StockBar>>,
     /// 指数
     index: HashMap<String, Index>,
 }
@@ -198,12 +198,7 @@ pub trait DataProvider: Send + Sync {
     async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date>;
 
     /// 股票日线，返回时按时间排序
-    async fn daily_bars(
-        &mut self,
-        symbol: StockSymbol,
-        start: Date,
-        end: Date,
-    ) -> Vec<StockDailyBar>;
+    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar>;
 
     /// 查询指数名称，必须非空；查询失败或指数不存在时 panic。
     async fn index_name(&mut self, symbol: &str) -> String;

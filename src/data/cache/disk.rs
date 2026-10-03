@@ -1,5 +1,5 @@
 use super::mem::MemCacheProvider;
-use crate::data::{DataProvider, IndexHistComp, RqData, StockDailyBar, StockSymbol};
+use crate::data::{DataProvider, IndexHistComp, RqData, StockBar, StockSymbol};
 use anyhow::{Context, Result, ensure};
 use std::{io::Write, path::PathBuf};
 use time::Date;
@@ -120,13 +120,8 @@ impl DataProvider for DiskCacheProvider {
         self.inner.trading_days(start, end).await
     }
 
-    async fn daily_bars(
-        &mut self,
-        symbol: StockSymbol,
-        start: Date,
-        end: Date,
-    ) -> Vec<StockDailyBar> {
-        self.inner.daily_bars(symbol, start, end).await
+    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
+        self.inner.stock_bar(symbol, start, end).await
     }
 
     async fn index_name(&mut self, symbol: &str) -> String {
