@@ -805,7 +805,7 @@ async fn lazy_engine_downloads_full_backtest_range_once() {
         &server,
         "trade_cal",
         &["cal_date", "is_open"],
-        json!([["20240102", 1]]),
+        json!([["20240102", 1], ["20240103", 1]]),
     )
     .await;
     response(
@@ -821,21 +821,27 @@ async fn lazy_engine_downloads_full_backtest_range_once() {
             "vol",
             "amount",
         ],
-        json!([["000001.SZ", "20240102", 10, 11, 9, 10, 1000, 100]]),
+        json!([
+            ["000001.SZ", "20240102", 10, 11, 9, 10, 1000, 100],
+            ["000001.SZ", "20240103", 10, 11, 9, 10, 1000, 100]
+        ]),
     )
     .await;
     response(
         &server,
         "adj_factor",
         &["ts_code", "trade_date", "adj_factor"],
-        json!([["000001.SZ", "20240102", 2]]),
+        json!([["000001.SZ", "20240102", 2], ["000001.SZ", "20240103", 2]]),
     )
     .await;
     response(
         &server,
         "stk_limit",
         &["ts_code", "trade_date", "up_limit", "down_limit"],
-        json!([["000001.SZ", "20240102", 11, 9]]),
+        json!([
+            ["000001.SZ", "20240102", 11, 9],
+            ["000001.SZ", "20240103", 11, 9]
+        ]),
     )
     .await;
     let result = BacktestEngine::new(BacktestConfig {
@@ -854,6 +860,7 @@ async fn lazy_engine_downloads_full_backtest_range_once() {
     .await
     .unwrap();
     assert_eq!(result.trades.len(), 1);
+    assert_eq!(result.trades[0].date, parse_date("20240103").unwrap());
     let requests = server.received_requests().await.unwrap();
     assert_eq!(
         requests.len(),

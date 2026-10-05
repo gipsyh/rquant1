@@ -52,9 +52,10 @@ impl Strategy for BuyAndHold {
         "buy_and_hold"
     }
 
-    async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Order> {
+    async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Vec<Order>> {
         let cash_amount = ctx.init_cash * self.config.allocation / self.config.symbols.len() as f64;
-        self.config
+        let orders = self
+            .config
             .symbols
             .iter()
             .copied()
@@ -62,10 +63,11 @@ impl Strategy for BuyAndHold {
                 ctx.position(*symbol)
                     .is_none_or(|p| p.purchased_shares == 0)
             })
-            .map(|symbol| Order::Buy {
+            .map(|symbol| Order::BuyAmount {
                 symbol,
                 cash_amount,
             })
-            .collect()
+            .collect();
+        vec![orders]
     }
 }

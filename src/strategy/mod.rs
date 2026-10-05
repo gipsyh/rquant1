@@ -1,6 +1,6 @@
 mod buy_and_hold;
 mod ma_cross;
-use crate::engine::{BtContext, Order};
+use crate::engine::{BtContext, Order, OrderFailure};
 pub use buy_and_hold::{BuyAndHold, BuyAndHoldConfig};
 use clap::Subcommand;
 pub use ma_cross::{MaCross, MaCrossConfig};
@@ -28,6 +28,10 @@ impl StrategyConfig {
 pub trait Strategy: Send {
     fn name(&self) -> &str;
 
-    /// 每个交易日调用一次，可按需查询历史行情，并为任意股票返回零笔或多笔订单。
-    async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Order>;
+    /// 每个交易日收盘后调用。外层批次在下一交易日开盘依次结算，内层订单并行撮合。
+    /// 同批共享批次开始时的现金与可卖股数，不使用同批卖出所得；末日订单不执行。
+    async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Vec<Order>>;
+
+    /// 失败即结束，不自动重试。默认不处理；回调不能向当前批次追加订单。
+    async fn on_order_failed(&mut self, _failure: &OrderFailure) {}
 }

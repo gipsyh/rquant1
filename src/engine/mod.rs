@@ -1,4 +1,7 @@
+mod execution;
 mod rbt;
+#[cfg(test)]
+mod test;
 
 use crate::data::{DataProvider, StockBar, StockSymbol};
 use crate::utils::{latest_rqdate, parse_date};
@@ -29,7 +32,7 @@ pub struct BacktestConfig {
     /// 印花税率，默认万分之五，仅卖出收取，无最低收费。
     #[arg(long = "stamp-tax", default_value_t = 0.0005)]
     pub stamp_tax_rate: f64,
-    /// 买入/卖出成交价 = 当日原始开盘价 × (1 ± slippage_bps / 10000)。
+    /// 保留配置兼容性；当前按开盘原价撮合，仅支持 0。
     #[arg(long, default_value_t = 0.0)]
     pub slippage_bps: f64,
     /// 交易单位（股）
@@ -56,6 +59,9 @@ impl BacktestConfig {
         if self.start > self.end {
             return Err(anyhow!("回测参数无效: 开始日期不能晚于截止日期"));
         }
+        if self.slippage_bps != 0.0 {
+            return Err(anyhow!("开盘价撮合仅支持 slippage_bps=0"));
+        }
         if !self.initial_cash.is_finite() || self.initial_cash <= 0.0 {
             return Err(anyhow!("回测参数无效: 初始资金必须是有限正数"));
         }
@@ -75,12 +81,12 @@ impl BacktestConfig {
     }
 }
 
-/// 开盘前上下文。历史数据按需查询，禁止查询当日及未来日线。
+/// 收盘后上下文，可查询当日及以前日线；返回的订单在下一交易日开盘执行。
 pub struct BtContext<'a> {
     date: Date,
     pub init_cash: f64,
     pub cash: f64,
-    /// 上一交易日收盘权益；首日为初始资金。
+    /// 当日收盘权益。
     pub equity: f64,
     pub positions: &'a BTreeMap<StockSymbol, Position>,
     provider: tokio::sync::Mutex<&'a mut dyn DataProvider>,
@@ -103,8 +109,8 @@ impl BtContext<'_> {
     /// 查询任意股票指定区间的已完成日线；允许查询回测开始日之前的数据。
     pub async fn history(&self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
         assert!(
-            start <= end && end < self.date,
-            "历史查询区间无效或包含当日及未来数据"
+            start <= end && end <= self.date,
+            "历史查询区间无效或包含未来数据"
         );
         let mut provider = self.provider.lock().await;
         rbt::load_bars(&mut **provider, symbol, start, end, self.adjust_returns).await
@@ -115,15 +121,37 @@ impl BtContext<'_> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum Order {
-    /// 为指定股票买入，金额预算包含佣金。预算超过剩余现金时拒绝该笔订单。
-    Buy {
+    /// 精确股数，须为整手；限价 >= 次日开盘价才成交，不做部分成交。
+    BuyLimit {
+        symbol: StockSymbol,
+        shares: u64,
+        price: f64,
+    },
+    /// 按次日开盘价买入预算内最多整手股数，金额包含佣金。
+    BuyAmount {
         symbol: StockSymbol,
         cash_amount: f64,
     },
-    /// 清仓指定股票；当天买入过该股票时拒绝清仓。
+    /// 精确股数；限价 <= 次日开盘价才成交，不做部分成交。
+    SellLimit {
+        symbol: StockSymbol,
+        shares: u64,
+        price: f64,
+    },
+    /// 按次日开盘价卖出全部可卖持仓；当天新买入部分受 T+1 限制。
     SellAll { symbol: StockSymbol },
+    /// 各股票预算 = 本批次开始前现金 × 权重，包含佣金；权重和不得超过 1。
+    /// 各成分独立成交或失败，不将失败成分的预算重新分配。
+    BuyWeights { weights: BTreeMap<StockSymbol, f64> },
+}
+
+/// 每个失败委托（权重单按股票分别报告）的回调信息。
+#[derive(Clone, Debug)]
+pub struct OrderFailure {
+    pub order: Order,
+    pub detail: SkippedOrder,
 }
 
 /// 按股票独立记录持仓，估值口径由 BacktestConfig::adjust_returns 决定。
@@ -136,7 +164,11 @@ pub struct Position {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Trade {
+    pub signal_date: Date,
     pub date: Date,
+    /// 批次和原始订单下标（从 0 开始）。
+    pub batch_index: usize,
+    pub order_index: usize,
     pub symbol: String,
     pub side: &'static str,
     pub shares: u64,
@@ -146,6 +178,7 @@ pub struct Trade {
     pub commission: f64,
     /// 卖出印花税，买入恒为 0。
     pub stamp_tax: f64,
+    /// 整批结算后的现金；同批成交记录使用同一个值。
     pub cash_after: f64,
 }
 
@@ -164,7 +197,10 @@ pub struct EquityPoint {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct SkippedOrder {
+    pub signal_date: Date,
     pub date: Date,
+    pub batch_index: usize,
+    pub order_index: usize,
     pub symbol: String,
     pub side: &'static str,
     pub reason: String,

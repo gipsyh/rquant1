@@ -1,8 +1,8 @@
+use super::execution::Account;
 use super::*;
-use crate::data::{Adjustment, DataProvider, MemCacheProvider, StockSymbol};
+use crate::data::{Adjustment, DataProvider, MemCacheProvider};
 use crate::strategy::Strategy;
-use anyhow::{Result, anyhow};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Default)]
 pub struct BacktestEngine {
@@ -15,8 +15,7 @@ impl BacktestEngine {
         Ok(Self { config })
     }
 
-    /// 接管数据源和策略；本次回测的日线缓存随调用结束释放。
-    /// 股票首次被访问时下载整个回测区间，策略仅能读取当前交易日之前的数据。
+    /// 每日依次执行昨日订单、收盘估值、调用策略；末日生成的订单不执行。
     pub async fn run(
         &self,
         provider: Box<dyn DataProvider>,
@@ -27,144 +26,53 @@ impl BacktestEngine {
         let mut provider = MemCacheProvider::new(provider, start, end);
         let calendar = provider.trading_days(start, end).await;
         let days: BTreeSet<_> = calendar.iter().copied().collect();
-        if days.is_empty()
-            || days.len() != calendar.len()
-            || days.iter().any(|d| *d < start || *d > end)
-        {
-            return Err(anyhow!("回测数据无效: 交易日历为空、重复或超出区间"));
-        }
+        anyhow::ensure!(
+            !days.is_empty()
+                && days.len() == calendar.len()
+                && days.iter().all(|d| *d >= start && *d <= end),
+            "回测交易日历为空、重复或超出区间"
+        );
+        let mut account = Account::new(self.config.initial_cash);
         let mut symbols = BTreeSet::new();
-        let mut cash = self.config.initial_cash;
-        let mut positions: BTreeMap<StockSymbol, Position> = BTreeMap::new();
-        // 每只股票独立维护复权收益单位，不能混用不同股票的因子。
-        let mut return_units: BTreeMap<StockSymbol, f64> = BTreeMap::new();
-        let mut last_buy_dates = BTreeMap::new();
-        let mut previous_equity = cash;
-        let mut peak = cash;
+        let mut pending: Option<(Date, Vec<Vec<Order>>)> = None;
+        let mut previous_equity = account.cash;
+        let mut peak = account.cash;
         let mut trades = Vec::new();
         let mut equity_curve = Vec::new();
         let mut skipped_orders = Vec::new();
         for date in days {
-            let orders = {
-                let ctx = BtContext {
-                    date,
-                    init_cash: self.config.initial_cash,
-                    cash,
-                    equity: previous_equity,
-                    positions: &positions,
-                    provider: tokio::sync::Mutex::new(&mut provider),
-                    adjust_returns: self.config.adjust_returns,
-                };
-                strategy.on_trade_day(&ctx).await
-            };
-            // 下单顺序决定现金可用性；买单预算必须为有限正数。
-            for order in &orders {
-                if let Order::Buy { cash_amount, .. } = order
-                    && (!cash_amount.is_finite() || *cash_amount <= 0.0)
-                {
-                    return Err(anyhow!("回测参数无效: 订单金额必须是有限正数"));
-                }
-            }
-            for order in orders {
-                let (symbol, side) = match order {
-                    Order::Buy { symbol, .. } => (symbol, "buy"),
-                    Order::SellAll { symbol } => (symbol, "sell"),
-                };
-                symbols.insert(symbol);
-                let unavailable = match order {
-                    Order::Buy { cash_amount, .. } if cash_amount > cash => {
-                        Some(anyhow!("订单预算超过账户剩余现金"))
-                    }
-                    Order::SellAll { .. } if !positions.contains_key(&symbol) => {
-                        Some(anyhow!("没有可卖持仓"))
-                    }
-                    Order::SellAll { .. } if last_buy_dates.get(&symbol) == Some(&date) => {
-                        Some(anyhow!("当天买入的股票不能当天清仓"))
-                    }
-                    _ => None,
-                };
-                let mut bar = None;
-                let outcome = if let Some(reason) = unavailable {
-                    Err(reason)
-                } else {
-                    bar = load_bars(
-                        &mut provider,
-                        symbol,
-                        date,
-                        date,
-                        self.config.adjust_returns,
-                    )
-                    .await
-                    .into_iter()
-                    .next();
-                    match order {
-                        Order::Buy { cash_amount, .. } => self.buy(bar.as_ref(), cash_amount).map(
-                            |(shares, price, commission)| {
-                                (shares, price, shares as f64 * price, commission, 0.0)
-                            },
-                        ),
-                        Order::SellAll { .. } => self
-                            .sell(bar.as_ref(), return_units[&symbol])
-                            .and_then(|(price, notional, commission, stamp_tax)| {
-                                if cash + notional < commission + stamp_tax {
-                                    Err(anyhow!("卖出所得和现金不足以支付佣金及印花税"))
-                                } else {
-                                    Ok((
-                                        positions[&symbol].purchased_shares,
-                                        price,
-                                        notional,
-                                        commission,
-                                        stamp_tax,
-                                    ))
-                                }
-                            }),
-                    }
-                };
-                match outcome {
-                    Ok((shares, price, notional, commission, stamp_tax)) => {
+            account.start_day();
+            if let Some((signal_date, batches)) = pending.take() {
+                for (batch_index, orders) in batches.into_iter().enumerate() {
+                    for order in &orders {
                         match order {
-                            Order::Buy { .. } => {
-                                let factor = factor(
-                                    bar.as_ref().expect("buy requires bar"),
-                                    self.config.adjust_returns,
-                                );
-                                cash -= notional + commission;
-                                let position = positions.entry(symbol).or_default();
-                                position.purchased_shares = position
-                                    .purchased_shares
-                                    .checked_add(shares)
-                                    .ok_or_else(|| anyhow!("回测参数无效: 持股数量溢出"))?;
-                                *return_units.entry(symbol).or_default() += shares as f64 / factor;
-                                last_buy_dates.insert(symbol, date);
+                            Order::BuyLimit { symbol, .. }
+                            | Order::BuyAmount { symbol, .. }
+                            | Order::SellLimit { symbol, .. }
+                            | Order::SellAll { symbol } => {
+                                symbols.insert(*symbol);
                             }
-                            Order::SellAll { .. } => {
-                                cash += notional - commission - stamp_tax;
-                                positions.remove(&symbol);
-                                return_units.remove(&symbol);
-                                last_buy_dates.remove(&symbol);
+                            Order::BuyWeights { weights } => {
+                                symbols.extend(weights.keys().copied())
                             }
                         }
-                        trades.push(Trade {
-                            date,
-                            symbol: symbol.to_string(),
-                            side,
-                            shares,
-                            price,
-                            notional,
-                            commission,
-                            stamp_tax,
-                            cash_after: cash,
-                        });
                     }
-                    Err(reason) => skipped_orders.push(SkippedOrder {
-                        date,
-                        symbol: symbol.to_string(),
-                        side,
-                        reason: reason.to_string(),
-                    }),
+                    let result = self
+                        .execute_batch(
+                            &mut account,
+                            &mut provider,
+                            &mut *strategy,
+                            signal_date,
+                            date,
+                            batch_index,
+                            orders,
+                        )
+                        .await?;
+                    trades.extend(result.trades);
+                    skipped_orders.extend(result.skipped);
                 }
             }
-            for (&symbol, position) in &mut positions {
+            for (&symbol, position) in &mut account.positions {
                 if let Some(bar) = load_bars(
                     &mut provider,
                     symbol,
@@ -176,21 +84,23 @@ impl BacktestEngine {
                 .into_iter()
                 .next()
                 {
-                    position.market_value = return_units[&symbol]
+                    position.market_value = account.units[&symbol]
                         * bar.close
                         * factor(&bar, self.config.adjust_returns);
                 }
             }
-            let market_value: f64 = positions.values().map(|p| p.market_value).sum();
-            let equity = cash + market_value;
-            if !equity.is_finite() || equity <= 0.0 || cash < 0.0 {
-                return Err(anyhow!("回测数据无效: 资产估值溢出或余额无效"));
-            }
+            let market_value: f64 = account.positions.values().map(|p| p.market_value).sum();
+            let equity = account.cash + market_value;
+            anyhow::ensure!(
+                equity.is_finite() && equity > 0.0 && account.cash >= 0.0,
+                "资产估值或现金无效"
+            );
             peak = peak.max(equity);
             equity_curve.push(EquityPoint {
                 date,
-                cash,
-                positions: positions
+                cash: account.cash,
+                positions: account
+                    .positions
                     .iter()
                     .map(|(s, p)| (s.to_string(), p.clone()))
                     .collect(),
@@ -201,6 +111,16 @@ impl BacktestEngine {
                 drawdown: 1.0 - equity / peak,
             });
             previous_equity = equity;
+            let ctx = BtContext {
+                date,
+                init_cash: self.config.initial_cash,
+                cash: account.cash,
+                equity,
+                positions: &account.positions,
+                provider: tokio::sync::Mutex::new(&mut provider),
+                adjust_returns: self.config.adjust_returns,
+            };
+            pending = Some((date, strategy.on_trade_day(&ctx).await));
         }
         let performance = performance(&equity_curve, &trades, self.config.initial_cash);
         Ok(BacktestResult {
@@ -214,68 +134,6 @@ impl BacktestEngine {
             equity_curve,
             skipped_orders,
         })
-    }
-
-    fn sell(&self, bar: Option<&StockBar>, units: f64) -> Result<(f64, f64, f64, f64)> {
-        let bar = bar.ok_or_else(|| anyhow!("无当日日线（可能停牌或尚未上市）"))?;
-        if bar.volume <= 0.0 {
-            return Err(anyhow!("成交量为零"));
-        }
-        let limit = bar
-            .limit_down
-            .ok_or_else(|| anyhow!("缺少有效跌停价，跳过卖出"))?;
-        let price = bar.open * (1.0 - self.config.slippage_bps / 10_000.0);
-        if price <= limit + 1e-8 {
-            return Err(anyhow!("开盘或滑点后价格触及跌停"));
-        }
-        if price < bar.low - 1e-8 {
-            return Err(anyhow!("滑点后价格低于当日最低价"));
-        }
-        // 与收盘估值一致的收益单位结算，避免清仓丢失因子变化对应的收益。
-        let notional = units * factor(bar, self.config.adjust_returns) * price;
-        if !notional.is_finite() || notional <= 0.0 {
-            return Err(anyhow!("卖出金额无效或溢出"));
-        }
-        let commission =
-            (notional * self.config.commission_rate).max(self.config.minimum_commission);
-        let stamp_tax = notional * self.config.stamp_tax_rate;
-        Ok((price, notional, commission, stamp_tax))
-    }
-
-    fn buy(&self, bar: Option<&StockBar>, budget: f64) -> Result<(u64, f64, f64)> {
-        let bar = bar.ok_or_else(|| anyhow!("无当日日线（可能停牌或尚未上市）"))?;
-        if bar.volume <= 0.0 {
-            return Err(anyhow!("成交量为零"));
-        }
-        let limit = bar
-            .limit_up
-            .ok_or_else(|| anyhow!("缺少有效涨停价，跳过买入"))?;
-        let price = bar.open * (1.0 + self.config.slippage_bps / 10_000.0);
-        if price >= limit - 1e-8 {
-            return Err(anyhow!("开盘或滑点后价格触及涨停"));
-        }
-        if price > bar.high + 1e-8 {
-            return Err(anyhow!("滑点后价格超出当日最高价"));
-        }
-        let available = (budget - self.config.minimum_commission)
-            .max(0.0)
-            .min(budget / (1.0 + self.config.commission_rate));
-        let lots = (available / price / f64::from(self.config.lot_size)).floor();
-        // f64 只能精确表示 2^53 以内的整数股数。
-        if !lots.is_finite() || lots * f64::from(self.config.lot_size) > (1_u64 << 53) as f64 {
-            return Err(anyhow!("买入数量超出支持范围"));
-        }
-        let mut shares = lots as u64 * u64::from(self.config.lot_size);
-        while shares > 0 {
-            let notional = shares as f64 * price;
-            let commission =
-                (notional * self.config.commission_rate).max(self.config.minimum_commission);
-            if notional + commission <= budget {
-                return Ok((shares, price, commission));
-            }
-            shares -= u64::from(self.config.lot_size);
-        }
-        Err(anyhow!("资金不足以支付一个交易单位及佣金"))
     }
 }
 

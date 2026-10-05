@@ -18,7 +18,7 @@ pub struct MaCrossConfig {
     /// 长期 SMA 周期，必须大于短期周期
     #[arg(long, default_value_t = 20)]
     pub long: usize,
-    /// 目标总仓位比例；按上一日权益等额分配各股票的买入预算
+    /// 目标总仓位比例；按信号日收盘权益等额分配各股票的买入预算
     #[arg(long, default_value_t = 1.0)]
     pub allocation: f64,
 }
@@ -109,11 +109,10 @@ impl Strategy for MaCross {
         "ma_cross"
     }
 
-    async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Order> {
-        let Some(start) = self.next_history_date.replace(ctx.date()) else {
-            return Vec::new();
-        };
-        let end = ctx.date().previous_day().expect("回测日期必须递增");
+    async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Vec<Order>> {
+        let start = self.next_history_date.unwrap_or(ctx.date());
+        let end = ctx.date();
+        self.next_history_date = end.next_day();
         let mut sells = Vec::new();
         let mut buys = Vec::new();
         let budget = ctx.equity * self.config.allocation / self.config.symbols.len() as f64;
@@ -140,7 +139,7 @@ impl Strategy for MaCross {
                 (Some(false), true) => sells.push(Order::SellAll { symbol }),
                 (Some(true), false) if available > 0.0 => {
                     let cash_amount = budget.min(available);
-                    buys.push(Order::Buy {
+                    buys.push(Order::BuyAmount {
                         symbol,
                         cash_amount,
                     });
@@ -149,8 +148,7 @@ impl Strategy for MaCross {
                 _ => {}
             }
         }
-        // 买入预算只用开盘前现金，不提前假定卖出一定成交。
-        sells.extend(buys);
-        sells
+        // 卖出批次先结算；买入预算仍保守使用信号日已有现金。
+        vec![sells, buys]
     }
 }
