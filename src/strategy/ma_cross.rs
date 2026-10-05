@@ -1,6 +1,6 @@
 use super::Strategy;
 use crate::{
-    data::{Adjustment, StockBar, StockSymbol},
+    data::{StockBar, StockSymbol},
     engine::{BtContext, Order},
 };
 use clap::Args;
@@ -43,6 +43,7 @@ impl MaCrossConfig {
 
 #[derive(Default)]
 struct SignalState {
+    // 仅缓存 FactorAdjusted 日线，每根新增日线只转换一次。
     bars: VecDeque<StockBar>,
     // None 表示尚未发生交叉；不能仅因初始短均线较高就买入。
     target_long: Option<bool>,
@@ -67,21 +68,15 @@ impl MaCross {
     }
 }
 
-fn crossover(bars: &VecDeque<StockBar>, short: usize, long: usize, adjusted: bool) -> Option<bool> {
+fn crossover(bars: &VecDeque<StockBar>, short: usize, long: usize) -> Option<bool> {
     if bars.len() < long + 1 {
         return None;
     }
-    let factor = |bar: &StockBar| match (adjusted, bar.adjustment) {
-        (true, Some(Adjustment::Raw(f))) => f,
-        _ => 1.0,
-    };
-    // 相邻两个窗口使用同一基准，且基准来自已完成日线。
-    let base = factor(bars.back().unwrap());
     let mean = |offset: usize, period: usize| {
         bars.iter()
             .skip(offset)
             .take(period)
-            .map(|bar| bar.close * (factor(bar) / base) / period as f64)
+            .map(|bar| bar.close / period as f64)
             .sum::<f64>()
     };
     let prev_short = mean(long - short, short);
@@ -118,19 +113,15 @@ impl Strategy for MaCross {
         let budget = ctx.equity * self.config.allocation / self.config.symbols.len() as f64;
         let mut available = ctx.cash;
         for &symbol in &self.config.symbols {
-            let history = ctx.history(symbol, start, end).await;
+            let history = ctx.stock_bars(symbol, start, end).await;
             let state = self.states.entry(symbol).or_default();
             for bar in history {
+                let bar = bar.adjusted();
                 state.bars.push_back(bar);
                 if state.bars.len() > self.config.long + 1 {
                     state.bars.pop_front();
                 }
-                if let Some(target) = crossover(
-                    &state.bars,
-                    self.config.short,
-                    self.config.long,
-                    ctx.adjust_returns(),
-                ) {
+                if let Some(target) = crossover(&state.bars, self.config.short, self.config.long) {
                     state.target_long = Some(target);
                 }
             }

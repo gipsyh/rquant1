@@ -90,7 +90,6 @@ pub struct BtContext<'a> {
     pub equity: f64,
     pub positions: &'a BTreeMap<StockSymbol, Position>,
     provider: tokio::sync::Mutex<&'a mut dyn DataProvider>,
-    adjust_returns: bool,
 }
 
 impl BtContext<'_> {
@@ -102,28 +101,22 @@ impl BtContext<'_> {
         self.positions.get(&symbol)
     }
 
-    pub fn adjust_returns(&self) -> bool {
-        self.adjust_returns
-    }
-
-    /// 查询任意股票指定区间的已完成日线；允许查询回测开始日之前的数据。
-    pub async fn history(&self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
+    /// 查询闭区间内的原始日线和复权因子，允许回溯至回测开始日以前。
+    /// 不复权价格；区间无行情时返回空 Vec，日期或数据无效时 panic。
+    pub async fn stock_bars(&self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
         assert!(
             start <= end && end <= self.date,
             "历史查询区间无效或包含未来数据"
         );
         let mut provider = self.provider.lock().await;
-        rbt::load_bars(&mut **provider, symbol, start, end, self.adjust_returns).await
-    }
-
-    pub async fn bar(&self, symbol: StockSymbol, date: Date) -> Result<Option<StockBar>> {
-        Ok(self.history(symbol, date, date).await.into_iter().next())
+        rbt::load_bars(&mut **provider, symbol, start, end, true).await
     }
 }
 
 #[derive(Clone, Debug)]
 pub enum Order {
     /// 精确股数，须为整手；限价 >= 次日开盘价才成交，不做部分成交。
+    /// 信号日与执行日复权因子必须相同，否则原始限价失效。
     BuyLimit {
         symbol: StockSymbol,
         shares: u64,
@@ -135,6 +128,7 @@ pub enum Order {
         cash_amount: f64,
     },
     /// 精确股数；限价 <= 次日开盘价才成交，不做部分成交。
+    /// 信号日与执行日复权因子必须相同，否则原始限价失效。
     SellLimit {
         symbol: StockSymbol,
         shares: u64,

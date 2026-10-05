@@ -118,7 +118,6 @@ impl BacktestEngine {
                 equity,
                 positions: &account.positions,
                 provider: tokio::sync::Mutex::new(&mut provider),
-                adjust_returns: self.config.adjust_returns,
             };
             pending = Some((date, strategy.on_trade_day(&ctx).await));
         }
@@ -174,7 +173,10 @@ pub(super) fn validate_bar(bar: &StockBar, adjusted: bool) -> Result<()> {
             .flatten()
             .any(|v| !v.is_finite() || v <= 0.0)
         || matches!((bar.limit_down, bar.limit_up), (Some(low), Some(high)) if low > high)
-        || matches!(bar.adjustment, Some(Adjustment::Pre | Adjustment::Post))
+        || matches!(
+            bar.adjustment,
+            Some(Adjustment::Pre | Adjustment::Post | Adjustment::FactorAdjusted)
+        )
         || matches!(bar.adjustment, Some(Adjustment::Raw(f)) if !f.is_finite() || f <= 0.0)
         || (adjusted && bar.adjustment.is_none())
     {

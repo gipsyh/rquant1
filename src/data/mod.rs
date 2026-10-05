@@ -1,3 +1,4 @@
+mod bar;
 mod cache;
 pub use cache::{DiskCacheProvider, MemCacheProvider};
 mod index;
@@ -127,9 +128,7 @@ pub struct Stock {
 
 /// OHLC 与涨跌停价的实际复权状态。
 ///
-/// 对应 Python `Bar.adjustment` 的 `float | str | None`。换成枚举后，
-/// 「字符串只允许 `"pre"`、`"post"`」这条约束由类型系统保证，不再需要运行时校验；
-/// 「请求复权但实际未完成时不得标记为已复权」也由构造方式保证。不影响成交量、成交额和市值 —— 它们恒为未复权口径。
+/// 仅描述价格口径；成交量、成交额和市值始终保持原始口径。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Adjustment {
     /// 未复权，数值是当日原始 `adj_factor`（恒 > 0）。`1.0` 也表示未复权。
@@ -138,6 +137,9 @@ pub enum Adjustment {
     Pre,
     /// 已后复权，只记录类型，不携带因子或基准。
     Post,
+    /// 原始价格直接乘当日 `adj_factor`，不按窗口首尾因子归一化。
+    /// 策略指标统一使用此口径；不可作为实际交易报价。
+    FactorAdjusted,
 }
 
 /// 个股日线

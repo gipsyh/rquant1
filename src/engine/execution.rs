@@ -175,6 +175,7 @@ impl BacktestEngine {
         }
         // 同批所有委托基于同一个账户快照形成候选成交；读取顺序不赋予资金优先级。
         let mut bars = BTreeMap::new();
+        let mut signal_bars = BTreeMap::new();
         let mut fills = Vec::new();
         for leg in legs {
             if let std::collections::btree_map::Entry::Vacant(entry) = bars.entry(leg.symbol) {
@@ -185,7 +186,29 @@ impl BacktestEngine {
                     .next();
                 entry.insert(bar);
             }
-            match self.plan(&leg, bars[&leg.symbol].as_ref(), account) {
+            let factor_check = if matches!(
+                leg.intent,
+                Intent::BuyLimit { .. } | Intent::SellLimit { .. }
+            ) {
+                if let std::collections::btree_map::Entry::Vacant(entry) =
+                    signal_bars.entry(leg.symbol)
+                {
+                    entry.insert(
+                        provider
+                            .stock_bar(leg.symbol, signal_date, signal_date)
+                            .await
+                            .into_iter()
+                            .next(),
+                    );
+                }
+                check_limit_factors(
+                    signal_bars[&leg.symbol].as_ref(),
+                    bars[&leg.symbol].as_ref(),
+                )
+            } else {
+                Ok(())
+            };
+            match factor_check.and_then(|()| self.plan(&leg, bars[&leg.symbol].as_ref(), account)) {
                 Ok((shares, units, price, notional, commission, stamp_tax)) => {
                     fills.push(Fill {
                         leg,
@@ -433,4 +456,19 @@ impl BacktestEngine {
         );
         Ok((shares, units, price, notional, commission, stamp_tax))
     }
+}
+
+fn check_limit_factors(signal: Option<&StockBar>, execution: Option<&StockBar>) -> Result<()> {
+    let factor = |bar: Option<&StockBar>| -> Result<f64> {
+        match bar.map(|bar| bar.adjustment) {
+            Some(Some(Adjustment::Raw(f))) if f.is_finite() && f > 0.0 => Ok(f),
+            _ => Err(anyhow!("限价单无法确认信号日与执行日的原始复权因子")),
+        }
+    };
+    let (before, after) = (factor(signal)?, factor(execution)?);
+    anyhow::ensure!(
+        before == after,
+        "复权因子发生变化（{before} -> {after}），限价单失效"
+    );
+    Ok(())
 }

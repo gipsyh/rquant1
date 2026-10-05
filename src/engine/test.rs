@@ -83,7 +83,7 @@ impl Strategy for Probe {
     }
     async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Vec<Order>> {
         if self.read_history {
-            let bars = ctx.history(a(), ctx.date(), ctx.date()).await;
+            let bars = ctx.stock_bars(a(), ctx.date(), ctx.date()).await;
             assert_eq!(bars[0].date, ctx.date());
         }
         self.observations
@@ -524,7 +524,245 @@ async fn close_context_still_rejects_future_history() {
         equity: 1000.0,
         positions: &positions,
         provider: tokio::sync::Mutex::new(&mut provider),
-        adjust_returns: false,
     };
-    ctx.history(a(), FIRST, NEXT).await;
+    ctx.stock_bars(a(), FIRST, NEXT).await;
+}
+
+#[tokio::test]
+async fn stock_bars_keeps_raw_prices_and_adjustment_is_explicit() {
+    let mut provider = Provider::default();
+    for bar in &mut provider.bars {
+        if bar.date == FIRST {
+            bar.close = 20.0;
+        } else {
+            bar.adjustment = Some(Adjustment::Raw(2.0));
+        }
+    }
+    let positions = BTreeMap::new();
+    let ctx = BtContext {
+        date: NEXT,
+        init_cash: 1000.0,
+        cash: 1000.0,
+        equity: 1000.0,
+        positions: &positions,
+        provider: tokio::sync::Mutex::new(&mut provider),
+    };
+    let bars = ctx.stock_bars(a(), FIRST, NEXT).await;
+    assert_eq!(
+        bars.iter().map(|bar| bar.close).collect::<Vec<_>>(),
+        vec![20.0, 10.0]
+    );
+    assert_eq!(bars[0].adjustment, Some(Adjustment::Raw(1.0)));
+    assert_eq!(bars[1].adjustment, Some(Adjustment::Raw(2.0)));
+    let adjusted: Vec<_> = bars.iter().copied().map(StockBar::adjusted).collect();
+    for (raw, adjusted) in bars.iter().zip(&adjusted) {
+        let ratio = if raw.date == FIRST { 1.0 } else { 2.0 };
+        assert_eq!(
+            *adjusted,
+            StockBar {
+                open: raw.open * ratio,
+                high: raw.high * ratio,
+                low: raw.low * ratio,
+                close: raw.close * ratio,
+                limit_up: raw.limit_up.map(|price| price * ratio),
+                limit_down: raw.limit_down.map(|price| price * ratio),
+                adjustment: Some(Adjustment::FactorAdjusted),
+                ..*raw
+            }
+        );
+    }
+    assert_eq!(
+        adjusted.iter().map(|bar| bar.close).collect::<Vec<_>>(),
+        vec![20.0, 20.0]
+    );
+    assert!(std::panic::catch_unwind(|| adjusted[0].adjusted()).is_err());
+    assert_eq!(bars[0].close, 20.0);
+    assert_eq!(bars[0].turnover, 10000.0);
+    for adjusted_bar in &adjusted {
+        for require_factor in [false, true] {
+            assert!(rbt::validate_bar(adjusted_bar, require_factor).is_err());
+        }
+    }
+    assert_eq!(ctx.stock_bars(a(), FIRST, NEXT).await, bars);
+}
+
+#[tokio::test]
+async fn stock_bars_panics_for_adjusted_or_missing_factor_data() {
+    for adjustment in [
+        Some(Adjustment::Pre),
+        Some(Adjustment::Post),
+        Some(Adjustment::FactorAdjusted),
+        None,
+        Some(Adjustment::Raw(0.0)),
+        Some(Adjustment::Raw(f64::NAN)),
+    ] {
+        let failed = tokio::spawn(async move {
+            let mut provider = Provider::default();
+            for bar in &mut provider.bars {
+                bar.adjustment = adjustment;
+            }
+            let positions = BTreeMap::new();
+            let ctx = BtContext {
+                date: NEXT,
+                init_cash: 1000.0,
+                cash: 1000.0,
+                equity: 1000.0,
+                positions: &positions,
+                provider: tokio::sync::Mutex::new(&mut provider),
+            };
+            ctx.stock_bars(a(), FIRST, NEXT).await;
+        })
+        .await
+        .unwrap_err();
+        assert!(failed.is_panic());
+    }
+}
+
+#[test]
+fn adjusted_bar_rejects_invalid_prices_and_factors() {
+    let raw = bar(a(), FIRST);
+    let no_limits = StockBar {
+        limit_up: None,
+        limit_down: None,
+        ..raw
+    };
+    assert_eq!(
+        no_limits.adjusted(),
+        StockBar {
+            adjustment: Some(Adjustment::FactorAdjusted),
+            ..no_limits
+        }
+    );
+    for adjustment in [
+        None,
+        Some(Adjustment::Pre),
+        Some(Adjustment::Post),
+        Some(Adjustment::FactorAdjusted),
+        Some(Adjustment::Raw(0.0)),
+        Some(Adjustment::Raw(-1.0)),
+        Some(Adjustment::Raw(f64::NAN)),
+        Some(Adjustment::Raw(f64::INFINITY)),
+    ] {
+        let bar = StockBar { adjustment, ..raw };
+        assert!(std::panic::catch_unwind(|| bar.adjusted()).is_err());
+    }
+    for bar in [
+        StockBar {
+            open: f64::NAN,
+            ..raw
+        },
+        StockBar {
+            high: f64::INFINITY,
+            ..raw
+        },
+        StockBar { low: 0.0, ..raw },
+        StockBar { close: -1.0, ..raw },
+        StockBar {
+            limit_up: Some(f64::INFINITY),
+            ..raw
+        },
+        StockBar {
+            limit_down: Some(-1.0),
+            ..raw
+        },
+        StockBar {
+            adjustment: Some(Adjustment::Raw(f64::MAX)),
+            ..raw
+        },
+    ] {
+        assert!(std::panic::catch_unwind(|| bar.adjusted()).is_err());
+    }
+}
+
+#[tokio::test]
+async fn factor_changes_reject_limit_orders_but_not_open_priced_orders() {
+    for adjusted_account in [false, true] {
+        let mut e = engine(10000.0);
+        e.config.adjust_returns = adjusted_account;
+        let mut account = Account::new(10000.0);
+        hold(&mut account, b(), 100);
+        let mut provider = Provider::default();
+        for bar in &mut provider.bars {
+            if bar.date == NEXT {
+                bar.adjustment = Some(Adjustment::Raw(2.0));
+            }
+        }
+        let mut probe = Probe::default();
+        let result = e
+            .execute_batch(
+                &mut account,
+                &mut provider,
+                &mut probe,
+                FIRST,
+                NEXT,
+                0,
+                vec![
+                    buy(a(), 100, 10.0),
+                    sell(b(), 50, 10.0),
+                    Order::BuyAmount {
+                        symbol: c(),
+                        cash_amount: 1000.0,
+                    },
+                    Order::BuyWeights {
+                        weights: [(a(), 0.1)].into(),
+                    },
+                    Order::SellAll { symbol: b() },
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.trades.len(), 3);
+        assert!(result.trades.iter().all(|trade| trade.price == 10.0));
+        assert_eq!(result.skipped.len(), 2);
+        assert!(
+            result
+                .skipped
+                .iter()
+                .all(|failure| failure.reason.contains("复权因子发生变化"))
+        );
+        assert_eq!(probe.failures.lock().unwrap().len(), 2);
+        assert!(!account.positions.contains_key(&b()));
+        assert_eq!(account.positions[&a()].purchased_shares, 100);
+    }
+}
+
+#[tokio::test]
+async fn limit_orders_fail_when_signal_factor_cannot_be_verified() {
+    for missing_bar in [false, true] {
+        let mut provider = Provider::default();
+        if missing_bar {
+            provider
+                .bars
+                .retain(|bar| !(bar.date == FIRST && bar.symbol == a()));
+        } else {
+            provider
+                .bars
+                .iter_mut()
+                .filter(|bar| bar.date == FIRST && bar.symbol == a())
+                .for_each(|bar| bar.adjustment = None);
+        }
+        let mut account = Account::new(1000.0);
+        let result = engine(1000.0)
+            .execute_batch(
+                &mut account,
+                &mut provider,
+                &mut Probe::default(),
+                FIRST,
+                NEXT,
+                0,
+                vec![
+                    buy(a(), 100, 10.0),
+                    Order::BuyAmount {
+                        symbol: b(),
+                        cash_amount: 1000.0,
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.skipped.len(), 1);
+        assert!(result.skipped[0].reason.contains("无法确认"));
+        assert_eq!(result.trades.len(), 1, "无效限价单不占用同批资金");
+        assert_eq!(account.positions[&b()].purchased_shares, 100);
+    }
 }
