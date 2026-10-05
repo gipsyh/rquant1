@@ -1,5 +1,5 @@
 use super::mem::MemCacheProvider;
-use crate::data::{DataProvider, IndexHistComp, RqData, StockBar, StockSymbol};
+use crate::data::{DataProvider, IndexHistComp, RqData, Stock, StockBar, StockSymbol};
 use anyhow::{Context, Result, ensure};
 use std::{io::Write, path::PathBuf};
 use time::Date;
@@ -45,13 +45,10 @@ impl DiskCacheProvider {
                         .all(|(symbol, stock)| stock.symbol == *symbol),
                     "缓存股票信息无效: 股票代码与键不匹配"
                 );
-                for (symbol, hist) in &data.stock_bars {
-                    hist.validate()
-                        .with_context(|| format!("缓存行情无效: {symbol}"))?;
-                    ensure!(
-                        hist.bars().iter().all(|bar| bar.symbol == *symbol),
-                        "缓存行情无效: {symbol} 股票代码与键不匹配"
-                    );
+                for (symbol, stock) in &data.stock {
+                    stock
+                        .validate()
+                        .with_context(|| format!("缓存股票信息或行情无效: {symbol}"))?;
                 }
                 for (symbol, index) in &data.index {
                     ensure!(
@@ -110,6 +107,10 @@ impl Drop for DiskCacheProvider {
 impl DataProvider for DiskCacheProvider {
     async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date> {
         self.inner.trading_days(start, end).await
+    }
+
+    async fn stock_info(&mut self, symbol: StockSymbol) -> Stock {
+        self.inner.stock_info(symbol).await
     }
 
     async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {

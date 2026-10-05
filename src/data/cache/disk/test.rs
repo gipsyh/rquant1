@@ -94,6 +94,17 @@ struct Provider {
 
 #[async_trait::async_trait]
 impl DataProvider for Provider {
+    async fn stock_info(&mut self, symbol: StockSymbol) -> crate::data::Stock {
+        crate::data::Stock {
+            symbol,
+            bars: None,
+            name: "测试股票".into(),
+            listed: date!(1991 - 04 - 03),
+            delisted: None,
+            industry: Some("银行".into()),
+        }
+    }
+
     async fn index_name(&mut self, _symbol: &str) -> String {
         panic!("本测试数据源不提供指数名称")
     }
@@ -167,19 +178,13 @@ async fn drop保存并在重建后命中日线缓存() {
         assert!(
             ron::from_str::<RqData>(&std::fs::read_to_string(&path).unwrap())
                 .unwrap()
-                .stock_bars
+                .stock
                 .is_empty()
         );
-        cache.inner.data.stock.insert(
-            symbol,
-            Stock {
-                symbol,
-                name: "测试股票".into(),
-                listed: date!(1991 - 04 - 03),
-                delisted: None,
-                industry: Some("银行".into()),
-            },
-        );
+        let info = cache.stock_info(symbol).await;
+        assert!(info.bars.is_none());
+        assert!(cache.inner.data.stock[&symbol].bars.is_none());
+        assert!(requests.lock().unwrap().is_empty());
         // 首次只查询一天，也预取构造时的整个范围。
         assert_eq!(cache.stock_bar(symbol, start, start).await, bars[..1]);
         assert_eq!(*requests.lock().unwrap(), vec![(symbol, start, end)]);
@@ -200,7 +205,11 @@ async fn drop保存并在重建后命中日线缓存() {
         assert_eq!(stock.delisted, None);
         assert_eq!(stock.industry.as_deref(), Some("银行"));
         assert_eq!(
-            cache.inner.data.stock_bars[&symbol].range(),
+            cache.inner.data.stock[&symbol]
+                .bars
+                .as_ref()
+                .unwrap()
+                .range(),
             DateRange::new(start, end)
         );
         assert!(requests.lock().unwrap().is_empty());
@@ -269,7 +278,11 @@ fn 损坏或旧格式时保留原文件() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(DiskCacheProvider::FILE_NAME);
     let start = date!(2024 - 01 - 02);
-    for text in ["not valid ron", "(version: 999, bars: {})"] {
+    for text in [
+        "not valid ron",
+        "(version: 999, bars: {})",
+        "(stock: {}, stock_bars: {}, index: {})",
+    ] {
         std::fs::write(&path, text).unwrap();
         let result = DiskCacheProvider::with_path(
             provider(vec![], &Requests::default()),
@@ -336,10 +349,10 @@ async fn 两端补拉后所有日线有序且完整保存() {
     let text = std::fs::read_to_string(&path).unwrap();
     let data: RqData = ron::from_str(&text).unwrap();
     assert_eq!(
-        data.stock_bars[&symbol].range(),
+        data.stock[&symbol].bars.as_ref().unwrap().range(),
         DateRange::new(first, last)
     );
-    assert_eq!(data.stock_bars[&symbol].bars(), bars);
+    assert_eq!(data.stock[&symbol].bars.as_ref().unwrap().bars(), bars);
     requests.lock().unwrap().clear();
     let mut cache =
         DiskCacheProvider::with_path(provider(vec![], &requests), first, last, path).unwrap();
@@ -356,15 +369,24 @@ fn 拒绝区间不一致或无序重复日线且保留文件() {
     let last = date!(2024 - 01 - 03);
     for case in 0..6 {
         let mut data = RqData::default();
-        data.stock_bars.insert(
+        data.stock.insert(
             symbol,
-            StockHistBar::new(
-                DateRange::new(first, last),
-                vec![bar(symbol, first), bar(symbol, last)],
-            )
-            .unwrap(),
+            Stock {
+                symbol,
+                name: "测试股票".into(),
+                listed: first,
+                delisted: None,
+                industry: None,
+                bars: Some(
+                    StockHistBar::new(
+                        DateRange::new(first, last),
+                        vec![bar(symbol, first), bar(symbol, last)],
+                    )
+                    .unwrap(),
+                ),
+            },
         );
-        let hist = data.stock_bars.get_mut(&symbol).unwrap();
+        let hist = data.stock.get_mut(&symbol).unwrap().bars.as_mut().unwrap();
         match case {
             0 => hist.range = DateRange::new(first, first),
             1 => hist.bars.reverse(),
@@ -431,4 +453,28 @@ fn stock_history_validates_and_slices_covered_dates() {
     combined.extend(hist.slice(first, first).unwrap());
     combined.extend(hist.slice(last, last).unwrap());
     assert_eq!(combined, hist);
+}
+
+#[tokio::test]
+async fn metadata_only_stock_persists_without_claiming_bar_coverage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(DiskCacheProvider::FILE_NAME);
+    let symbol = StockSymbol::from("000001");
+    let start = date!(2024 - 01 - 02);
+    let requests = Requests::default();
+    {
+        let mut cache =
+            DiskCacheProvider::with_path(provider(vec![], &requests), start, start, path.clone())
+                .unwrap();
+        assert!(cache.stock_info(symbol).await.bars.is_none());
+    }
+    let mut cache =
+        DiskCacheProvider::with_path(provider(vec![], &requests), start, start, path).unwrap();
+    assert!(cache.inner.data.stock[&symbol].bars.is_none());
+    assert!(cache.stock_bar(symbol, start, start).await.is_empty());
+    let hist = cache.inner.data.stock[&symbol].bars.as_ref().unwrap();
+    assert_eq!(hist.range(), DateRange::new(start, start));
+    assert!(hist.bars().is_empty());
+    cache.stock_bar(symbol, start, start).await;
+    assert_eq!(*requests.lock().unwrap(), vec![(symbol, start, start)]);
 }

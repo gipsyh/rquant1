@@ -1,6 +1,6 @@
 use crate::data::index::normalize_index_symbol;
 use crate::data::{
-    DataProvider, Index, IndexHistComp, RqData, StockBar, StockHistBar, StockSymbol,
+    DataProvider, Index, IndexHistComp, RqData, Stock, StockBar, StockHistBar, StockSymbol,
 };
 use crate::utils::DateRange;
 use time::Date;
@@ -58,29 +58,65 @@ impl DataProvider for MemCacheProvider {
         self.provider.trading_days(start, end).await
     }
 
+    async fn stock_info(&mut self, symbol: StockSymbol) -> Stock {
+        if let Some(stock) = self.data.stock.get(&symbol) {
+            return stock.info();
+        }
+        let info = self.provider.stock_info(symbol).await;
+        assert_eq!(info.symbol, symbol, "股票基础信息代码不匹配");
+        info.validate()
+            .unwrap_or_else(|err| panic!("股票基础信息无效: {symbol}: {err:#}"));
+        assert!(info.bars.is_none(), "股票基础信息查询不应返回日线");
+        self.data.stock.insert(symbol, info);
+        self.data.stock[&symbol].info()
+    }
+
     async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
         assert!(start <= end, "查询开始日期不能晚于结束日期");
-        if let Some(range) = self.data.stock_bars.get(&symbol).map(StockHistBar::range) {
+        if let Some(range) = self
+            .data
+            .stock
+            .get(&symbol)
+            .and_then(|stock| stock.bars.as_ref().map(StockHistBar::range))
+        {
             // 历史预热或更宽的查询仅补拉已下载区间外的部分。
             if start < range.start() {
                 let bars = self
                     .download(symbol, start, range.start().previous_day().unwrap())
                     .await;
-                self.data.stock_bars.get_mut(&symbol).unwrap().extend(bars);
+                self.data
+                    .stock
+                    .get_mut(&symbol)
+                    .unwrap()
+                    .bars
+                    .as_mut()
+                    .unwrap()
+                    .extend(bars);
             }
             if end > range.end() {
                 let bars = self
                     .download(symbol, range.end().next_day().unwrap(), end)
                     .await;
-                self.data.stock_bars.get_mut(&symbol).unwrap().extend(bars);
+                self.data
+                    .stock
+                    .get_mut(&symbol)
+                    .unwrap()
+                    .bars
+                    .as_mut()
+                    .unwrap()
+                    .extend(bars);
             }
         } else {
+            self.stock_info(symbol).await;
             let bars = self
                 .download(symbol, self.start.min(start), self.end.max(end))
                 .await;
-            self.data.stock_bars.insert(symbol, bars);
+            self.data.stock.get_mut(&symbol).unwrap().bars = Some(bars);
         }
-        self.data.stock_bars[&symbol]
+        self.data.stock[&symbol]
+            .bars
+            .as_ref()
+            .unwrap()
             .slice(start, end)
             .unwrap()
             .bars

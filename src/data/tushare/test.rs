@@ -800,6 +800,13 @@ async fn upstream_permission_error_propagates_to_caller() {
 #[tokio::test]
 async fn lazy_engine_downloads_full_backtest_range_once() {
     let server = MockServer::start().await;
+    response(
+        &server,
+        "stock_basic",
+        &["ts_code", "name", "list_date", "delist_date", "industry"],
+        json!([["000001.SZ", "平安银行", "19910403", null, "银行"]]),
+    )
+    .await;
     response(&server, "stock_st", &["ts_code", "trade_date"], json!([])).await;
     response(
         &server,
@@ -864,11 +871,15 @@ async fn lazy_engine_downloads_full_backtest_range_once() {
     let requests = server.received_requests().await.unwrap();
     assert_eq!(
         requests.len(),
-        5,
-        "calendar once, daily/factor/limit/st once each"
+        6,
+        "calendar and stock info once, daily/factor/limit/st once each"
     );
     for request in requests {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
+        if body["api_name"] == "stock_basic" {
+            assert_eq!(body["params"]["ts_code"], "000001.SZ");
+            continue;
+        }
         assert_eq!(body["params"]["start_date"], "20240101");
         assert_eq!(body["params"]["end_date"], "20240104");
     }
@@ -983,4 +994,78 @@ async fn dates_before_st_coverage_are_rejected() {
             parse_date("20000104").unwrap(),
         )
         .await;
+}
+
+#[tokio::test]
+async fn stock_info_finds_delisted_and_suspended_stocks() {
+    for found_status in ["D", "P"] {
+        let server = MockServer::start().await;
+        for status in ["L", "D", "P"] {
+            let rows = if status == found_status {
+                json!([[
+                    "000001.SZ",
+                    "测试股票",
+                    "19910403",
+                    if status == "D" {
+                        Some("20240101")
+                    } else {
+                        None
+                    },
+                    null
+                ]])
+            } else {
+                json!([])
+            };
+            Mock::given(path("/stock_basic"))
+                .and(body_partial_json(
+                    json!({"params": {"ts_code": "000001.SZ", "list_status": status}}),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "code": 0, "data": {
+                        "fields": ["ts_code", "name", "list_date", "delist_date", "industry"],
+                        "items": rows
+                    }
+                })))
+                .mount(&server)
+                .await;
+        }
+        let stock = provider(&server).stock_info("000001".into()).await;
+        assert_eq!(stock.name, "测试股票");
+        assert_eq!(stock.listed, parse_date("19910403").unwrap());
+        assert_eq!(stock.delisted.is_some(), found_status == "D");
+        assert!(stock.bars.is_none());
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            if found_status == "D" { 2 } else { 3 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn stock_info_rejects_missing_duplicate_and_invalid_metadata() {
+    let valid = json!(["000001.SZ", "测试股票", "19910403", null, null]);
+    for rows in [
+        json!([]),
+        json!([valid.clone(), valid]),
+        json!([["600000.SH", "其他股票", "19910403", null, null]]),
+        json!([["000001.SZ", " ", "19910403", null, null]]),
+        json!([["000001.SZ", "测试股票", "invalid", null, null]]),
+        json!([["000001.SZ", "测试股票", "19910403", "19900101", null]]),
+    ] {
+        let server = MockServer::start().await;
+        response(
+            &server,
+            "stock_basic",
+            &["ts_code", "name", "list_date", "delist_date", "industry"],
+            rows,
+        )
+        .await;
+        let mut source = provider(&server);
+        assert!(
+            tokio::spawn(async move { source.stock_info("000001".into()).await })
+                .await
+                .unwrap_err()
+                .is_panic()
+        );
+    }
 }

@@ -14,6 +14,10 @@ pub(crate) struct IndexProvider {
 
 #[async_trait::async_trait]
 impl DataProvider for IndexProvider {
+    async fn stock_info(&mut self, _: StockSymbol) -> crate::data::Stock {
+        unreachable!()
+    }
+
     async fn index_name(&mut self, symbol: &str) -> String {
         self.name_requests.lock().unwrap().push(symbol.into());
         self.name.into()

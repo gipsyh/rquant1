@@ -111,7 +111,7 @@ impl Display for StockBoard {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stock {
     /// 股票代码
     pub symbol: StockSymbol,
@@ -123,6 +123,38 @@ pub struct Stock {
     pub delisted: Option<Date>,
     /// 行业
     pub industry: Option<String>,
+    /// None 表示未查询日线；Some 即已覆盖对应区间，日线数组允许为空。
+    pub bars: Option<StockHistBar>,
+}
+
+impl Stock {
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.name.trim().is_empty(), "股票名称不能为空");
+        anyhow::ensure!(
+            self.delisted.is_none_or(|date| date >= self.listed),
+            "退市日期不能早于上市日期"
+        );
+        if let Some(bars) = &self.bars {
+            bars.validate()?;
+            anyhow::ensure!(
+                bars.bars().iter().all(|bar| bar.symbol == self.symbol),
+                "股票与日线代码不匹配"
+            );
+        }
+        Ok(())
+    }
+
+    /// 仅复制基础信息，日线历史不随基础信息查询返回。
+    pub(crate) fn info(&self) -> Self {
+        Self {
+            symbol: self.symbol,
+            name: self.name.clone(),
+            listed: self.listed,
+            delisted: self.delisted,
+            industry: self.industry.clone(),
+            bars: None,
+        }
+    }
 }
 
 /// OHLC 与涨跌停价的实际复权状态。
@@ -279,10 +311,10 @@ impl StockHistBar {
 
 /// 全部已有数据；交易日历暂不存储。
 #[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RqData {
+    /// 股票基础信息及其日线历史。
     stock: HashMap<StockSymbol, Stock>,
-    /// 各股票的已查询区间和完整日线历史。
-    stock_bars: HashMap<StockSymbol, StockHistBar>,
     /// 指数
     index: HashMap<String, Index>,
 }
@@ -292,6 +324,9 @@ pub struct RqData {
 pub trait DataProvider: Send + Sync {
     /// 股票交易日查询
     async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date>;
+
+    /// 查询股票基础信息，返回 Stock 的 bars 为 None；数据无效或查询失败时 panic。
+    async fn stock_info(&mut self, symbol: StockSymbol) -> Stock;
 
     /// 股票日线，返回时按时间排序
     async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar>;

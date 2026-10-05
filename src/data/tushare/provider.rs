@@ -1,7 +1,7 @@
 //! Tushare 数据源：HTTP 接口调用、重试与日线数据组装。
 
 use super::table::Table;
-use crate::data::{Adjustment, DataProvider, IndexHistComp, StockBar, StockSymbol};
+use crate::data::{Adjustment, DataProvider, IndexHistComp, Stock, StockBar, StockSymbol};
 use crate::utils::parse_date;
 use anyhow::{Context, Result, anyhow};
 use serde::Deserialize;
@@ -425,8 +425,66 @@ fn check_row(code: &str, expected: &str, date: Date, start: Date, end: Date) {
     );
 }
 
+#[derive(Deserialize)]
+struct StockBasic {
+    ts_code: String,
+    name: String,
+    list_date: String,
+    delist_date: Option<String>,
+    industry: Option<String>,
+}
+
+impl TushareProvider {
+    async fn fetch_stock_info(&self, symbol: StockSymbol) -> Result<Stock> {
+        let code = symbol.tushare_code();
+        // stock_basic 默认只返回上市股票，退市和暂停上市股票需显式查询。
+        for status in ["L", "D", "P"] {
+            let rows = self
+                .stock_basic(
+                    params! { "ts_code" => code.clone(), "list_status" => status },
+                    "ts_code,name,list_date,delist_date,industry",
+                )
+                .await?
+                .to_typed::<StockBasic>()?;
+            if rows.is_empty() {
+                continue;
+            }
+            anyhow::ensure!(
+                rows.len() == 1 && rows[0].ts_code == code,
+                "股票基础信息返回重复或不匹配的代码: {code}"
+            );
+            let row = rows.into_iter().next().unwrap();
+            let info = Stock {
+                symbol,
+                bars: None,
+                name: row.name,
+                listed: parse_date(&row.list_date)?,
+                delisted: row
+                    .delist_date
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|date| parse_date(&date))
+                    .transpose()?,
+                industry: row.industry.filter(|value| !value.trim().is_empty()),
+            };
+            info.validate()?;
+            anyhow::ensure!(
+                status != "D" || info.delisted.is_some(),
+                "退市股票缺少退市日期: {code}"
+            );
+            return Ok(info);
+        }
+        anyhow::bail!("找不到已上市股票的基础信息: {code}")
+    }
+}
+
 #[async_trait::async_trait]
 impl DataProvider for TushareProvider {
+    async fn stock_info(&mut self, symbol: StockSymbol) -> Stock {
+        self.fetch_stock_info(symbol)
+            .await
+            .unwrap_or_else(|err| panic!("股票基础信息查询失败: {err:#}"))
+    }
+
     async fn index_name(&mut self, symbol: &str) -> String {
         self.fetch_index_name(symbol)
             .await

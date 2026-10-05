@@ -51,6 +51,17 @@ impl Default for Provider {
 }
 #[async_trait::async_trait]
 impl DataProvider for Provider {
+    async fn stock_info(&mut self, symbol: StockSymbol) -> crate::data::Stock {
+        crate::data::Stock {
+            symbol,
+            bars: None,
+            name: "测试股票".into(),
+            listed: date!(1991 - 04 - 03),
+            delisted: None,
+            industry: Some("银行".into()),
+        }
+    }
+
     async fn trading_days(&mut self, _start: Date, _end: Date) -> Vec<Date> {
         vec![FIRST, NEXT, LAST]
     }
