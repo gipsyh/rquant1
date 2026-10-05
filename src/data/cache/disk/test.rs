@@ -1,5 +1,5 @@
 use super::*;
-use crate::data::{Adjustment, Stock};
+use crate::data::{Adjustment, Stock, StockHistBar};
 use crate::utils::DateRange;
 use std::sync::{Arc, Mutex};
 use time::macros::date;
@@ -200,7 +200,7 @@ async fn drop保存并在重建后命中日线缓存() {
         assert_eq!(stock.delisted, None);
         assert_eq!(stock.industry.as_deref(), Some("银行"));
         assert_eq!(
-            cache.inner.data.stock_bar_date[&symbol],
+            cache.inner.data.stock_bars[&symbol].range(),
             DateRange::new(start, end)
         );
         assert!(requests.lock().unwrap().is_empty());
@@ -335,8 +335,11 @@ async fn 两端补拉后所有日线有序且完整保存() {
     }
     let text = std::fs::read_to_string(&path).unwrap();
     let data: RqData = ron::from_str(&text).unwrap();
-    assert_eq!(data.stock_bar_date[&symbol], DateRange::new(first, last));
-    assert_eq!(data.stock_bars[&symbol], bars);
+    assert_eq!(
+        data.stock_bars[&symbol].range(),
+        DateRange::new(first, last)
+    );
+    assert_eq!(data.stock_bars[&symbol].bars(), bars);
     requests.lock().unwrap().clear();
     let mut cache =
         DiskCacheProvider::with_path(provider(vec![], &requests), first, last, path).unwrap();
@@ -351,33 +354,28 @@ fn 拒绝区间不一致或无序重复日线且保留文件() {
     let symbol = StockSymbol::from("000001.SZ");
     let first = date!(2024 - 01 - 02);
     let last = date!(2024 - 01 - 03);
-    for case in 0..7 {
+    for case in 0..6 {
         let mut data = RqData::default();
-        data.stock_bar_date
-            .insert(symbol, DateRange::new(first, last));
-        data.stock_bars
-            .insert(symbol, vec![bar(symbol, first), bar(symbol, last)]);
+        data.stock_bars.insert(
+            symbol,
+            StockHistBar::new(
+                DateRange::new(first, last),
+                vec![bar(symbol, first), bar(symbol, last)],
+            )
+            .unwrap(),
+        );
+        let hist = data.stock_bars.get_mut(&symbol).unwrap();
         match case {
-            0 => {
-                data.stock_bar_date.clear();
-            }
-            1 => {
-                data.stock_bars.clear();
-            }
+            0 => hist.range = DateRange::new(first, first),
+            1 => hist.bars.reverse(),
             // 无效区间只能在序列化后篡改，公开 API 不允许构造。
             2 => {}
-            3 => {
-                data.stock_bar_date
-                    .insert(symbol, DateRange::new(first, first));
-            }
-            4 => {
-                data.stock_bars.get_mut(&symbol).unwrap().reverse();
-            }
+            3 => hist.bars[1].date = first,
+            4 => hist.bars[0].symbol = "600000.SH".into(),
             5 => {
-                data.stock_bars.get_mut(&symbol).unwrap()[1].date = first;
-            }
-            6 => {
-                data.stock_bars.get_mut(&symbol).unwrap()[0].symbol = "600000.SH".into();
+                for bar in &mut hist.bars {
+                    bar.symbol = "600000.SH".into();
+                }
             }
             _ => unreachable!(),
         }
@@ -402,4 +400,35 @@ fn 拒绝区间不一致或无序重复日线且保留文件() {
         assert!(result.is_err(), "case {case}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
     }
+}
+
+#[test]
+fn stock_history_validates_and_slices_covered_dates() {
+    let symbol = StockSymbol::from("000001.SZ");
+    let first = date!(2024 - 01 - 02);
+    let middle = date!(2024 - 01 - 03);
+    let last = date!(2024 - 01 - 04);
+    let range = DateRange::new(first, last);
+    let hist = StockHistBar::new(range, vec![bar(symbol, first), bar(symbol, last)]).unwrap();
+    let empty = hist.slice(middle, middle).unwrap();
+    assert_eq!(empty.range(), DateRange::new(middle, middle));
+    assert!(empty.bars().is_empty());
+    assert_eq!(hist.slice(first, first).unwrap().bars(), &hist.bars()[..1]);
+    assert_eq!(hist.slice(first, last).unwrap(), hist);
+    assert!(hist.slice(first.previous_day().unwrap(), last).is_err());
+    assert!(hist.slice(first, last.next_day().unwrap()).is_err());
+    assert!(hist.slice(last, first).is_err());
+    for bars in [
+        vec![bar(symbol, last), bar(symbol, first)],
+        vec![bar(symbol, first), bar(symbol, first)],
+        vec![bar(symbol, first.previous_day().unwrap())],
+        vec![bar(symbol, last.next_day().unwrap())],
+        vec![bar(symbol, first), bar("600000.SH".into(), last)],
+    ] {
+        assert!(StockHistBar::new(range, bars).is_err());
+    }
+    let mut combined = empty;
+    combined.extend(hist.slice(first, first).unwrap());
+    combined.extend(hist.slice(last, last).unwrap());
+    assert_eq!(combined, hist);
 }

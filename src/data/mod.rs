@@ -211,15 +211,78 @@ impl StockBar {
     }
 }
 
+/// 单只股票的日线历史，包含覆盖闭区间内全部可用日线。
+/// 区间内没有日线的日期表示已查询但无行情，如非交易日、停牌或退市。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StockHistBar {
+    range: DateRange,
+    /// 同一股票，日期严格升序且位于覆盖区间内；允许为空。
+    bars: Vec<StockBar>,
+}
+
+impl StockHistBar {
+    pub fn new(range: DateRange, bars: Vec<StockBar>) -> anyhow::Result<Self> {
+        let hist = Self { range, bars };
+        hist.validate()?;
+        Ok(hist)
+    }
+
+    pub fn range(&self) -> DateRange {
+        self.range
+    }
+
+    pub fn bars(&self) -> &[StockBar] {
+        &self.bars
+    }
+
+    pub(crate) fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.bars.iter().all(|bar| self.range.contains(bar.date))
+                && self.bars.windows(2).all(|pair| {
+                    pair[0].date < pair[1].date && pair[0].symbol == pair[1].symbol
+                }),
+            "股票日线必须属于同一股票、日期严格升序且位于覆盖区间内"
+        );
+        Ok(())
+    }
+
+    /// 截取已覆盖的闭区间；无行情时仍保留查询区间。
+    pub fn slice(&self, start: Date, end: Date) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            start <= end && self.range.contains(start) && self.range.contains(end),
+            "股票日线查询区间超出已覆盖范围"
+        );
+        let first = self.bars.partition_point(|bar| bar.date < start);
+        let last = self.bars.partition_point(|bar| bar.date <= end);
+        Self::new(DateRange::new(start, end), self.bars[first..last].to_vec())
+    }
+
+    /// 合并相邻的已查询区间，空行情区间也会扩大覆盖范围。
+    pub(crate) fn extend(&mut self, other: Self) {
+        let left = other.range.end().next_day() == Some(self.range.start());
+        let right = self.range.end().next_day() == Some(other.range.start());
+        assert!(left || right, "只能合并相邻的股票日线区间");
+        if let (Some(a), Some(b)) = (self.bars.first(), other.bars.first()) {
+            assert_eq!(a.symbol, b.symbol, "不能合并不同股票的日线");
+        }
+        if left {
+            let mut bars = other.bars;
+            bars.append(&mut self.bars);
+            self.bars = bars;
+            self.range.set_start(other.range.start());
+        } else {
+            self.bars.extend(other.bars);
+            self.range.set_end(other.range.end());
+        }
+    }
+}
+
 /// 全部已有数据；交易日历暂不存储。
 #[derive(Default, Serialize, Deserialize)]
 pub struct RqData {
     stock: HashMap<StockSymbol, Stock>,
-    /// Bar 数据的日期闭区间，如果bars在这个区间的数据不存在则代表非交易日、停牌、退市等
-    stock_bar_date: HashMap<StockSymbol, DateRange>,
-    /// 与 bar_date 具有相同的股票键；日线按日期严格升序且位于对应闭区间内。
-    /// 已查询但没有日线的区间用空 Vec 表示。
-    stock_bars: HashMap<StockSymbol, Vec<StockBar>>,
+    /// 各股票的已查询区间和完整日线历史。
+    stock_bars: HashMap<StockSymbol, StockHistBar>,
     /// 指数
     index: HashMap<String, Index>,
 }

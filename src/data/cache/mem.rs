@@ -1,5 +1,7 @@
 use crate::data::index::normalize_index_symbol;
-use crate::data::{DataProvider, Index, IndexHistComp, RqData, StockBar, StockSymbol};
+use crate::data::{
+    DataProvider, Index, IndexHistComp, RqData, StockBar, StockHistBar, StockSymbol,
+};
 use crate::utils::DateRange;
 use time::Date;
 
@@ -38,16 +40,15 @@ impl MemCacheProvider {
         }
     }
 
-    async fn download(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
+    async fn download(&mut self, symbol: StockSymbol, start: Date, end: Date) -> StockHistBar {
         let mut bars = self.provider.stock_bar(symbol, start, end).await;
         bars.sort_unstable_by_key(|bar| bar.date);
         assert!(
-            bars.iter()
-                .all(|bar| bar.symbol == symbol && bar.date >= start && bar.date <= end)
-                && bars.windows(2).all(|pair| pair[0].date < pair[1].date),
-            "行情数据无效: {symbol} 返回股票不匹配、越界或重复日线"
+            bars.iter().all(|bar| bar.symbol == symbol),
+            "行情股票不匹配: {symbol}"
         );
-        bars
+        StockHistBar::new(DateRange::new(start, end), bars)
+            .unwrap_or_else(|err| panic!("行情数据无效: {symbol}: {err:#}"))
     }
 }
 
@@ -59,46 +60,30 @@ impl DataProvider for MemCacheProvider {
 
     async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
         assert!(start <= end, "查询开始日期不能晚于结束日期");
-        if let Some(&range) = self.data.stock_bar_date.get(&symbol) {
-            let (cached_start, cached_end) = (range.start(), range.end());
+        if let Some(range) = self.data.stock_bars.get(&symbol).map(StockHistBar::range) {
             // 历史预热或更宽的查询仅补拉已下载区间外的部分。
-            if start < cached_start {
-                let mut bars = self
-                    .download(symbol, start, cached_start.previous_day().unwrap())
-                    .await;
-                let cached = self.data.stock_bars.get_mut(&symbol).unwrap();
-                // 新数据全部早于已有区间，直接前接即可保持严格升序。
-                bars.append(cached);
-                *cached = bars;
-                self.data
-                    .stock_bar_date
-                    .get_mut(&symbol)
-                    .unwrap()
-                    .set_start(start);
-            }
-            if end > cached_end {
+            if start < range.start() {
                 let bars = self
-                    .download(symbol, cached_end.next_day().unwrap(), end)
+                    .download(symbol, start, range.start().previous_day().unwrap())
                     .await;
                 self.data.stock_bars.get_mut(&symbol).unwrap().extend(bars);
-                self.data
-                    .stock_bar_date
-                    .get_mut(&symbol)
-                    .unwrap()
-                    .set_end(end);
+            }
+            if end > range.end() {
+                let bars = self
+                    .download(symbol, range.end().next_day().unwrap(), end)
+                    .await;
+                self.data.stock_bars.get_mut(&symbol).unwrap().extend(bars);
             }
         } else {
-            let (start, end) = (self.start.min(start), self.end.max(end));
-            let bars = self.download(symbol, start, end).await;
+            let bars = self
+                .download(symbol, self.start.min(start), self.end.max(end))
+                .await;
             self.data.stock_bars.insert(symbol, bars);
-            self.data
-                .stock_bar_date
-                .insert(symbol, DateRange::new(start, end));
         }
-        let bars = &self.data.stock_bars[&symbol];
-        let first = bars.partition_point(|bar| bar.date < start);
-        let last = bars.partition_point(|bar| bar.date <= end);
-        bars[first..last].to_vec()
+        self.data.stock_bars[&symbol]
+            .slice(start, end)
+            .unwrap()
+            .bars
     }
 
     async fn index_name(&mut self, symbol: &str) -> String {

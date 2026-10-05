@@ -45,20 +45,12 @@ impl DiskCacheProvider {
                         .all(|(symbol, stock)| stock.symbol == *symbol),
                     "缓存股票信息无效: 股票代码与键不匹配"
                 );
-                ensure!(
-                    data.stock_bar_date.len() == data.stock_bars.len(),
-                    "缓存行情无效: bars 与 bar_date 的股票键不一致"
-                );
-                for (symbol, bars) in &data.stock_bars {
-                    let range = data
-                        .stock_bar_date
-                        .get(symbol)
-                        .with_context(|| format!("缓存行情无效: {symbol} 缺少 bar_date"))?;
+                for (symbol, hist) in &data.stock_bars {
+                    hist.validate()
+                        .with_context(|| format!("缓存行情无效: {symbol}"))?;
                     ensure!(
-                        bars.iter()
-                            .all(|bar| { bar.symbol == *symbol && range.contains(bar.date) })
-                            && bars.windows(2).all(|pair| pair[0].date < pair[1].date),
-                        "缓存行情无效: {symbol} 的日期范围、股票代码或日期顺序不正确"
+                        hist.bars().iter().all(|bar| bar.symbol == *symbol),
+                        "缓存行情无效: {symbol} 股票代码与键不匹配"
                     );
                 }
                 for (symbol, index) in &data.index {
