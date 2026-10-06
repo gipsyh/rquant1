@@ -7,6 +7,7 @@ use rquant::{
     data::{DiskCacheProvider, tushare::TushareProvider},
     engine::{BacktestConfig, BacktestEngine},
     strategy::StrategyConfig,
+    utils::DateRange,
 };
 use std::io::Write;
 
@@ -53,8 +54,7 @@ async fn run_bt(backtest: BacktestConfig, strategy: StrategyConfig) -> anyhow::R
     let strategy = strategy.build();
     let provider = Box::new(DiskCacheProvider::new(
         Box::new(TushareProvider::new()),
-        engine.config.start,
-        engine.config.end,
+        DateRange::new(engine.config.start, engine.config.end),
     ));
     let result = engine.run(provider, strategy).await?;
     let json = serde_json::to_string_pretty(&result)?;

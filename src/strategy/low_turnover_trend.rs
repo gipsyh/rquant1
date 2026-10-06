@@ -2,7 +2,7 @@ use super::Strategy;
 use crate::{
     data::{StockBar, StockSymbol},
     engine::{BtContext, Order},
-    utils::parse_date,
+    utils::{DateRange, parse_date},
 };
 use clap::{Args, Parser};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -152,9 +152,8 @@ impl LowTurnoverTrend {
                 .checked_sub(span)
                 .unwrap_or(Date::MIN)
                 .max(floor);
-            let bars = ctx
-                .stock_bars(symbol, start, window.start.previous_day().unwrap())
-                .await;
+            let range = DateRange::new(start, window.start.previous_day().unwrap());
+            let bars = ctx.stock_bars(symbol, range).await;
             for bar in bars.into_iter().rev().take(count - window.bars.len()) {
                 window.bars.push_front(bar.adjusted());
             }
@@ -169,7 +168,9 @@ impl LowTurnoverTrend {
             log::warn!("{date} 早于历史查询下界，跳过地量趋势信号");
             return None;
         }
-        let hist = ctx.index_comp(&self.config.symbol, date, date).await;
+        let hist = ctx
+            .index_comp(&self.config.symbol, DateRange::new(date, date))
+            .await;
         let comp = match hist.composition(date) {
             Ok(comp) => comp,
             Err(err) => {
@@ -212,7 +213,7 @@ impl LowTurnoverTrend {
         }
         let mut downloaded = BTreeMap::new();
         for (start, symbols) in groups {
-            downloaded.extend(ctx.stocks_bars(&symbols, start, date).await);
+            downloaded.extend(ctx.stocks_bars(&symbols, DateRange::new(start, date)).await);
         }
         let mut ranked = Vec::new();
         for symbol in members {

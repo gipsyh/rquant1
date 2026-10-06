@@ -1166,9 +1166,11 @@ async fn stocks_bars_runs_four_downloads_and_respects_shared_http_limit() {
             });
         // 穿过两层缓存，验证批量调用未退化成逐只加锁/下载。
         let mut cache = MemCacheProvider::new(
-            Box::new(MemCacheProvider::new(Box::new(provider), start, end)),
-            start,
-            end,
+            Box::new(MemCacheProvider::new(
+                Box::new(provider),
+                DateRange::new(start, end),
+            )),
+            DateRange::new(start, end),
         );
         let requests: Vec<_> = (1..=6)
             .map(|i| {

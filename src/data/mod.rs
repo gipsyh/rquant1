@@ -302,14 +302,14 @@ impl StockHistBar {
     }
 
     /// 截取已覆盖的闭区间；无行情时仍保留查询区间。
-    pub fn slice(&self, start: Date, end: Date) -> anyhow::Result<Self> {
+    pub fn slice(&self, range: DateRange) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            start <= end && self.range.contains(start) && self.range.contains(end),
+            self.range.contains(range.start()) && self.range.contains(range.end()),
             "股票日线查询区间超出已覆盖范围"
         );
-        let first = self.bars.partition_point(|bar| bar.date < start);
-        let last = self.bars.partition_point(|bar| bar.date <= end);
-        Self::new(DateRange::new(start, end), self.bars[first..last].to_vec())
+        let first = self.bars.partition_point(|bar| bar.date < range.start());
+        let last = self.bars.partition_point(|bar| bar.date <= range.end());
+        Self::new(range, self.bars[first..last].to_vec())
     }
 
     /// 合并相邻的已查询区间，空行情区间也会扩大覆盖范围。

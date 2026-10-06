@@ -33,7 +33,7 @@ impl DataProvider for IndexProvider {
             .lock()
             .unwrap()
             .push((symbol.into(), start, end));
-        self.hist.slice(start, end).unwrap()
+        self.hist.slice(range).unwrap()
     }
 
     async fn trading_days(&mut self, range: DateRange) -> Vec<Date> {
@@ -82,8 +82,7 @@ async fn index_prefetches_once_and_extends_only_missing_ranges() {
             requests: requests.clone(),
             hist: full.clone(),
         }),
-        date!(2024 - 02 - 01),
-        date!(2024 - 02 - 29),
+        DateRange::new(date!(2024 - 02 - 01), date!(2024 - 02 - 29)),
     );
     let day = date!(2024 - 02 - 05);
     let first = cache
@@ -111,7 +110,7 @@ async fn index_prefetches_once_and_extends_only_missing_ranges() {
         .await;
     assert_eq!(
         wider,
-        full.slice(date!(2024 - 01 - 01), date!(2024 - 03 - 31))
+        full.slice(DateRange::new(date!(2024 - 01 - 01), date!(2024 - 03 - 31)))
             .unwrap()
     );
     assert_eq!(cache.data.index["000300.XSHG"].name, "沪深300");
@@ -160,8 +159,7 @@ async fn empty_index_history_is_cached_without_fabricating_composition() {
             requests: requests.clone(),
             hist: IndexHistComp::new(DateRange::new(start, end), vec![]).unwrap(),
         }),
-        start,
-        end,
+        DateRange::new(start, end),
     );
     for _ in 0..2 {
         assert!(
@@ -187,8 +185,7 @@ async fn empty_name_never_creates_an_index_or_downloads_composition() {
             name: " ",
             name_requests: Arc::default(),
         }),
-        start,
-        end,
+        DateRange::new(start, end),
     )));
     let task_cache = cache.clone();
     let failure = tokio::spawn(async move {

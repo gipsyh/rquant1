@@ -23,15 +23,14 @@ async fn index_history_persists_and_reloads_without_downloading() {
                 requests: requests.clone(),
                 hist: history(),
             }),
-            start,
-            end,
+            DateRange::new(start, end),
             path.clone(),
         )
         .unwrap();
         let comp = cache
             .index_comp("000300.SH", DateRange::new(start, end))
             .await;
-        assert_eq!(comp, history().slice(start, end).unwrap());
+        assert_eq!(comp, history().slice(DateRange::new(start, end)).unwrap());
         let index = cache.inner.data.index.get_mut("000300.XSHG").unwrap();
         assert_eq!(index.symbol, "000300.XSHG");
         assert_eq!(index.name, "沪深300");
@@ -80,8 +79,7 @@ fn invalid_index_cache_is_rejected_and_original_file_is_preserved() {
         std::fs::write(&path, &text).unwrap();
         let result = DiskCacheProvider::with_path(
             provider(vec![], &Requests::default()),
-            date!(2024 - 01 - 01),
-            date!(2024 - 03 - 31),
+            DateRange::new(date!(2024 - 01 - 01), date!(2024 - 03 - 31)),
             path.clone(),
         );
         assert!(result.is_err(), "case {case}");
@@ -192,8 +190,7 @@ async fn drop保存并在重建后命中日线缓存() {
     {
         let mut cache = DiskCacheProvider::with_path(
             provider(bars.clone(), &requests),
-            start,
-            end,
+            DateRange::new(start, end),
             path.clone(),
         )
         .unwrap();
@@ -223,9 +220,12 @@ async fn drop保存并在重建后命中日线缓存() {
     assert!(text.contains("Raw(1.23)"));
     requests.lock().unwrap().clear();
     {
-        let mut cache =
-            DiskCacheProvider::with_path(provider(vec![], &requests), start, end, path.clone())
-                .unwrap();
+        let mut cache = DiskCacheProvider::with_path(
+            provider(vec![], &requests),
+            DateRange::new(start, end),
+            path.clone(),
+        )
+        .unwrap();
         assert_eq!(
             cache
                 .stock_bar(symbol, DateRange::new(start, end))
@@ -272,9 +272,12 @@ async fn 空区间跨实例保留且只补拉两端和新股票() {
     let other = StockSymbol::from("600000.SH");
     let requests = Requests::default();
     {
-        let mut cache =
-            DiskCacheProvider::with_path(provider(vec![], &requests), start, end, path.clone())
-                .unwrap();
+        let mut cache = DiskCacheProvider::with_path(
+            provider(vec![], &requests),
+            DateRange::new(start, end),
+            path.clone(),
+        )
+        .unwrap();
         assert!(
             cache
                 .stock_bar(symbol, DateRange::new(start, end))
@@ -285,9 +288,12 @@ async fn 空区间跨实例保留且只补拉两端和新股票() {
     }
     requests.lock().unwrap().clear();
     {
-        let mut cache =
-            DiskCacheProvider::with_path(provider(vec![], &requests), start, end, path.clone())
-                .unwrap();
+        let mut cache = DiskCacheProvider::with_path(
+            provider(vec![], &requests),
+            DateRange::new(start, end),
+            path.clone(),
+        )
+        .unwrap();
         assert!(
             cache
                 .stock_bar(symbol, DateRange::new(start, end))
@@ -329,8 +335,12 @@ async fn 空区间跨实例保留且只补拉两端和新股票() {
         );
     }
     requests.lock().unwrap().clear();
-    let mut cache =
-        DiskCacheProvider::with_path(provider(vec![], &requests), start, end, path).unwrap();
+    let mut cache = DiskCacheProvider::with_path(
+        provider(vec![], &requests),
+        DateRange::new(start, end),
+        path,
+    )
+    .unwrap();
     assert!(
         cache
             .stock_bar(
@@ -364,8 +374,7 @@ fn 损坏或旧格式时保留原文件() {
         std::fs::write(&path, text).unwrap();
         let result = DiskCacheProvider::with_path(
             provider(vec![], &Requests::default()),
-            start,
-            start,
+            DateRange::new(start, start),
             path.clone(),
         );
         assert!(result.is_err());
@@ -407,8 +416,7 @@ async fn 两端补拉后所有日线有序且完整保存() {
         // 上游即使返回乱序，也会在进入缓存时排好序。
         let mut cache = DiskCacheProvider::with_path(
             provider(bars.iter().rev().copied().collect(), &requests),
-            middle,
-            middle,
+            DateRange::new(middle, middle),
             path.clone(),
         )
         .unwrap();
@@ -450,8 +458,12 @@ async fn 两端补拉后所有日线有序且完整保存() {
     );
     assert_eq!(data.stock[&symbol].bars.as_ref().unwrap().bars(), bars);
     requests.lock().unwrap().clear();
-    let mut cache =
-        DiskCacheProvider::with_path(provider(vec![], &requests), first, last, path).unwrap();
+    let mut cache = DiskCacheProvider::with_path(
+        provider(vec![], &requests),
+        DateRange::new(first, last),
+        path,
+    )
+    .unwrap();
     assert_eq!(
         cache
             .stock_bar(symbol, DateRange::new(first, last))
@@ -517,8 +529,7 @@ fn 拒绝区间不一致或无序重复日线且保留文件() {
         std::fs::write(&path, &text).unwrap();
         let result = DiskCacheProvider::with_path(
             provider(vec![], &Requests::default()),
-            first,
-            last,
+            DateRange::new(first, last),
             path.clone(),
         );
         assert!(result.is_err(), "case {case}");
@@ -534,14 +545,22 @@ fn stock_history_validates_and_slices_covered_dates() {
     let last = date!(2024 - 01 - 04);
     let range = DateRange::new(first, last);
     let hist = StockHistBar::new(range, vec![bar(symbol, first), bar(symbol, last)]).unwrap();
-    let empty = hist.slice(middle, middle).unwrap();
+    let empty = hist.slice(DateRange::new(middle, middle)).unwrap();
     assert_eq!(empty.range(), DateRange::new(middle, middle));
     assert!(empty.bars().is_empty());
-    assert_eq!(hist.slice(first, first).unwrap().bars(), &hist.bars()[..1]);
-    assert_eq!(hist.slice(first, last).unwrap(), hist);
-    assert!(hist.slice(first.previous_day().unwrap(), last).is_err());
-    assert!(hist.slice(first, last.next_day().unwrap()).is_err());
-    assert!(hist.slice(last, first).is_err());
+    assert_eq!(
+        hist.slice(DateRange::new(first, first)).unwrap().bars(),
+        &hist.bars()[..1]
+    );
+    assert_eq!(hist.slice(DateRange::new(first, last)).unwrap(), hist);
+    assert!(
+        hist.slice(DateRange::new(first.previous_day().unwrap(), last))
+            .is_err()
+    );
+    assert!(
+        hist.slice(DateRange::new(first, last.next_day().unwrap()))
+            .is_err()
+    );
     for bars in [
         vec![bar(symbol, last), bar(symbol, first)],
         vec![bar(symbol, first), bar(symbol, first)],
@@ -552,8 +571,8 @@ fn stock_history_validates_and_slices_covered_dates() {
         assert!(StockHistBar::new(range, bars).is_err());
     }
     let mut combined = empty;
-    combined.extend(hist.slice(first, first).unwrap());
-    combined.extend(hist.slice(last, last).unwrap());
+    combined.extend(hist.slice(DateRange::new(first, first)).unwrap());
+    combined.extend(hist.slice(DateRange::new(last, last)).unwrap());
     assert_eq!(combined, hist);
 }
 
@@ -565,13 +584,20 @@ async fn metadata_only_stock_persists_without_claiming_bar_coverage() {
     let start = date!(2024 - 01 - 02);
     let requests = Requests::default();
     {
-        let mut cache =
-            DiskCacheProvider::with_path(provider(vec![], &requests), start, start, path.clone())
-                .unwrap();
+        let mut cache = DiskCacheProvider::with_path(
+            provider(vec![], &requests),
+            DateRange::new(start, start),
+            path.clone(),
+        )
+        .unwrap();
         assert!(cache.stock_info(symbol).await.bars.is_none());
     }
-    let mut cache =
-        DiskCacheProvider::with_path(provider(vec![], &requests), start, start, path).unwrap();
+    let mut cache = DiskCacheProvider::with_path(
+        provider(vec![], &requests),
+        DateRange::new(start, start),
+        path,
+    )
+    .unwrap();
     assert!(cache.inner.data.stock[&symbol].bars.is_none());
     assert!(
         cache
@@ -617,9 +643,12 @@ async fn tradability_uses_historical_st_and_extends_and_reloads_cached_coverage(
     }
     let requests = Requests::default();
     {
-        let mut cache =
-            DiskCacheProvider::with_path(provider(bars, &requests), first, st_day, path.clone())
-                .unwrap();
+        let mut cache = DiskCacheProvider::with_path(
+            provider(bars, &requests),
+            DateRange::new(first, st_day),
+            path.clone(),
+        )
+        .unwrap();
         assert!(cache.is_tradable(symbol, first).await);
         assert!(!cache.is_tradable(symbol, missing).await);
         assert!(!cache.is_tradable(symbol, st_day).await);
@@ -640,8 +669,12 @@ async fn tradability_uses_historical_st_and_extends_and_reloads_cached_coverage(
         );
     }
     requests.lock().unwrap().clear();
-    let mut cache =
-        DiskCacheProvider::with_path(provider(vec![], &requests), first, recovered, path).unwrap();
+    let mut cache = DiskCacheProvider::with_path(
+        provider(vec![], &requests),
+        DateRange::new(first, recovered),
+        path,
+    )
+    .unwrap();
     assert!(!cache.is_tradable(symbol, missing).await);
     assert!(!cache.is_tradable(symbol, st_day).await);
     assert!(cache.is_tradable(symbol, recovered).await);
@@ -670,8 +703,7 @@ async fn batch_cache_deduplicates_extends_and_persists_empty_history() {
             requests: requests.clone(),
             batch_sizes: Arc::clone(&batch_sizes),
         }),
-        middle,
-        last,
+        DateRange::new(middle, last),
         path.clone(),
     )
     .unwrap();
@@ -714,8 +746,12 @@ async fn batch_cache_deduplicates_extends_and_persists_empty_history() {
     );
     drop(cache);
     requests.lock().unwrap().clear();
-    let mut cache =
-        DiskCacheProvider::with_path(provider(vec![], &requests), first, after, path).unwrap();
+    let mut cache = DiskCacheProvider::with_path(
+        provider(vec![], &requests),
+        DateRange::new(first, after),
+        path,
+    )
+    .unwrap();
     assert_eq!(
         cache.stocks_bar(&query).await,
         vec![

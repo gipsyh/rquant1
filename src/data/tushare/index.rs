@@ -75,13 +75,11 @@ impl TushareProvider {
     pub(super) async fn fetch_index_comp(
         &self,
         symbol: &str,
-        start: Date,
-        end: Date,
+        range: DateRange,
     ) -> Result<IndexHistComp> {
-        ensure!(start <= end, "查询开始日期不能晚于结束日期");
         let code = index_code(symbol)?;
         // 多取前一个自然月，供区间起点查询最近已生效的快照。
-        let first = start.replace_day(1)?;
+        let first = range.start().replace_day(1)?;
         let mut cursor = first
             .previous_day()
             .map_or(first, |date| date.replace_day(1).unwrap());
@@ -107,7 +105,7 @@ impl TushareProvider {
                     row.index_code
                 );
                 // 请求整月但只保留截止日及以前的数据，避免使用未来成分。
-                if date > end {
+                if date > range.end() {
                     continue;
                 }
                 ensure!(
@@ -122,7 +120,7 @@ impl TushareProvider {
                     "{code} {date} 存在重复成分 {stock}"
                 );
             }
-            if month_end >= end {
+            if month_end >= range.end() {
                 break;
             }
             cursor = month_end.next_day().expect("日期溢出");
@@ -131,7 +129,7 @@ impl TushareProvider {
             .into_iter()
             .map(|(date, weight)| Ok((date, Arc::new(IndexComp::new(weight)?))))
             .collect::<Result<Vec<_>>>()?;
-        IndexHistComp::new(DateRange::new(start, end), hist)?.slice(start, end)
+        IndexHistComp::new(range, hist)?.slice(range)
     }
 }
 
@@ -317,7 +315,10 @@ mod test {
             let server = MockServer::start().await;
             month(&server, "20231201", "20231231", rows).await;
             let err = provider(&server)
-                .fetch_index_comp("000300", date!(2024 - 01 - 01), date!(2024 - 01 - 31))
+                .fetch_index_comp(
+                    "000300",
+                    DateRange::new(date!(2024 - 01 - 01), date!(2024 - 01 - 31)),
+                )
                 .await
                 .unwrap_err();
             assert!(format!("{err:#}").contains(expected), "{err:#}");
@@ -337,7 +338,10 @@ mod test {
         )
         .await;
         provider(&server)
-            .fetch_index_comp("000300", date!(2024 - 01 - 01), date!(2024 - 01 - 31))
+            .fetch_index_comp(
+                "000300",
+                DateRange::new(date!(2024 - 01 - 01), date!(2024 - 01 - 31)),
+            )
             .await
             .unwrap();
     }
@@ -348,7 +352,10 @@ mod test {
         month(&server, "20231201", "20231231", json!([])).await;
         month(&server, "20240101", "20240131", json!([])).await;
         let hist = provider(&server)
-            .fetch_index_comp("000300", date!(2024 - 01 - 01), date!(2024 - 01 - 31))
+            .fetch_index_comp(
+                "000300",
+                DateRange::new(date!(2024 - 01 - 01), date!(2024 - 01 - 31)),
+            )
             .await
             .unwrap();
         assert!(hist.snapshots().is_empty());
@@ -364,7 +371,10 @@ mod test {
             .mount(&server)
             .await;
         let err = provider(&server)
-            .fetch_index_comp("000300", date!(2024 - 01 - 01), date!(2024 - 01 - 31))
+            .fetch_index_comp(
+                "000300",
+                DateRange::new(date!(2024 - 01 - 01), date!(2024 - 01 - 31)),
+            )
             .await
             .unwrap_err();
         assert!(err.to_string().contains("没有接口权限"));

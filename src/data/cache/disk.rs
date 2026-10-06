@@ -19,23 +19,18 @@ pub struct DiskCacheProvider {
 impl DiskCacheProvider {
     const FILE_NAME: &str = "rqdata.ron";
 
-    /// 首次访问未缓存股票或指数时预取 `start..=end`，请求更宽时自动补拉。
+    /// 首次访问未缓存股票或指数时预取 `range`，请求更宽时自动补拉。
     /// 缓存读取失败、损坏或数据不一致时 panic，保留原文件。
-    pub fn new(provider: Box<dyn DataProvider>, start: Date, end: Date) -> Self {
+    pub fn new(provider: Box<dyn DataProvider>, range: DateRange) -> Self {
         let path = std::env::current_dir()
             .expect("无法获取磁盘缓存工作目录")
             .join(Self::FILE_NAME);
-        Self::with_path(provider, start, end, path)
+        Self::with_path(provider, range, path)
             .unwrap_or_else(|err| panic!("初始化磁盘缓存失败: {err:#}"))
     }
 
-    fn with_path(
-        provider: Box<dyn DataProvider>,
-        start: Date,
-        end: Date,
-        path: PathBuf,
-    ) -> Result<Self> {
-        let mut inner = MemCacheProvider::new(provider, start, end);
+    fn with_path(provider: Box<dyn DataProvider>, range: DateRange, path: PathBuf) -> Result<Self> {
+        let mut inner = MemCacheProvider::new(provider, range);
         let exists = match std::fs::read_to_string(&path) {
             Ok(text) => {
                 let data: RqData = ron::from_str(&text)

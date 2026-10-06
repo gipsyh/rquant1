@@ -2,6 +2,7 @@ use super::Strategy;
 use crate::{
     data::{StockBar, StockSymbol},
     engine::{BtContext, Order},
+    utils::DateRange,
 };
 use clap::Args;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -113,7 +114,7 @@ impl Strategy for MaCross {
         let budget = ctx.equity * self.config.allocation / self.config.symbols.len() as f64;
         let mut available = ctx.cash;
         for &symbol in &self.config.symbols {
-            let history = ctx.stock_bars(symbol, start, end).await;
+            let history = ctx.stock_bars(symbol, DateRange::new(start, end)).await;
             let state = self.states.entry(symbol).or_default();
             for bar in history {
                 let bar = bar.adjusted();

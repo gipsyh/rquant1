@@ -97,17 +97,17 @@ impl IndexHistComp {
     }
 
     /// 截取已覆盖区间，同时保留起点已生效的最近一期快照。
-    pub fn slice(&self, start: Date, end: Date) -> anyhow::Result<Self> {
+    pub fn slice(&self, range: DateRange) -> anyhow::Result<Self> {
         anyhow::ensure!(
-            start <= end && self.range.contains(start) && self.range.contains(end),
+            self.range.contains(range.start()) && self.range.contains(range.end()),
             "指数成分查询区间超出已覆盖范围"
         );
         let first = self
             .hist
-            .partition_point(|(date, _)| *date <= start)
+            .partition_point(|(date, _)| *date <= range.start())
             .saturating_sub(1);
-        let last = self.hist.partition_point(|(date, _)| *date <= end);
-        Self::new(DateRange::new(start, end), self.hist[first..last].to_vec())
+        let last = self.hist.partition_point(|(date, _)| *date <= range.end());
+        Self::new(range, self.hist[first..last].to_vec())
     }
 
     /// 合并相邻区间；补拉附带的历史基准快照不覆盖已有区间内的数据。
@@ -169,7 +169,12 @@ mod test {
         let hist = IndexHistComp::new(DateRange::new(start, end), vec![(effective, comp.clone())])
             .unwrap();
         assert!(hist.composition(start).is_err());
-        assert!(hist.slice(start, start).unwrap().snapshots().is_empty());
+        assert!(
+            hist.slice(DateRange::new(start, start))
+                .unwrap()
+                .snapshots()
+                .is_empty()
+        );
         assert!(hist.composition(start.previous_day().unwrap()).is_err());
         assert!(hist.composition(end.next_day().unwrap()).is_err());
         assert!(Arc::ptr_eq(&comp, &hist.composition(effective).unwrap()));

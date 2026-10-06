@@ -22,14 +22,14 @@ impl BacktestEngine {
         mut strategy: Box<dyn Strategy>,
     ) -> Result<BacktestResult> {
         self.config.validate()?;
-        let (start, end) = (self.config.start, self.config.end);
-        let mut provider = MemCacheProvider::new(provider, start, end);
-        let calendar = provider.trading_days(DateRange::new(start, end)).await;
+        let range = DateRange::new(self.config.start, self.config.end);
+        let mut provider = MemCacheProvider::new(provider, range);
+        let calendar = provider.trading_days(range).await;
         let days: BTreeSet<_> = calendar.iter().copied().collect();
         anyhow::ensure!(
             !days.is_empty()
                 && days.len() == calendar.len()
-                && days.iter().all(|d| *d >= start && *d <= end),
+                && days.iter().all(|d| range.contains(*d)),
             "回测交易日历为空、重复或超出区间"
         );
         let mut account = Account::new(self.config.initial_cash);
@@ -73,16 +73,11 @@ impl BacktestEngine {
                 }
             }
             for (&symbol, position) in &mut account.positions {
-                if let Some(bar) = load_bars(
-                    &mut provider,
-                    symbol,
-                    date,
-                    date,
-                    self.config.adjust_returns,
-                )
-                .await
-                .into_iter()
-                .next()
+                let day = DateRange::new(date, date);
+                if let Some(bar) = load_bars(&mut provider, symbol, day, self.config.adjust_returns)
+                    .await
+                    .into_iter()
+                    .next()
                 {
                     position.market_value = account.units[&symbol]
                         * bar.close
@@ -125,8 +120,8 @@ impl BacktestEngine {
         Ok(BacktestResult {
             strategy: strategy.name().into(),
             symbols: symbols.iter().map(ToString::to_string).collect(),
-            start,
-            end,
+            start: range.start(),
+            end: range.end(),
             config: self.config.clone(),
             performance,
             trades,
@@ -140,11 +135,9 @@ impl BacktestEngine {
 pub(super) async fn load_bars(
     provider: &mut dyn DataProvider,
     symbol: StockSymbol,
-    start: time::Date,
-    end: time::Date,
+    range: DateRange,
     adjusted: bool,
 ) -> Vec<StockBar> {
-    let range = DateRange::new(start, end);
     let hist = provider.stock_bar(symbol, range).await;
     assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
     hist.validate().unwrap();

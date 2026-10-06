@@ -42,6 +42,11 @@ impl DateRange {
     pub fn contains(&self, date: Date) -> bool {
         (self.start..=self.end).contains(&date)
     }
+
+    /// 覆盖两个区间的最小闭区间。
+    pub fn union(self, other: Self) -> Self {
+        Self::new(self.start.min(other.start), self.end.max(other.end))
+    }
 }
 
 impl<'de> Deserialize<'de> for DateRange {

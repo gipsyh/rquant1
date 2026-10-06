@@ -100,15 +100,13 @@ impl DataProvider for Source {
         "测试指数".into()
     }
     async fn index_comp(&mut self, symbol: &str, range: DateRange) -> IndexHistComp {
-        let (start, end) = (range.start(), range.end());
         assert_eq!(symbol, "399101.XSHE");
-        self.comp.slice(start, end).unwrap()
+        self.comp.slice(range).unwrap()
     }
     async fn trading_days(&mut self, range: DateRange) -> Vec<Date> {
-        let (start, end) = (range.start(), range.end());
         self.days
             .iter()
-            .filter(|&&day| start <= day && day <= end)
+            .filter(|&&day| range.contains(day))
             .copied()
             .collect()
     }

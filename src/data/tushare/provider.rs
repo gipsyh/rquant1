@@ -447,9 +447,9 @@ fn insert_unique<T>(map: &mut BTreeMap<Date, T>, date: Date, value: T) {
     assert!(map.insert(date, value).is_none(), "重复日期 {date}");
 }
 
-fn check_row(code: &str, expected: &str, date: Date, start: Date, end: Date) {
+fn check_row(code: &str, expected: &str, date: Date, range: DateRange) {
     assert!(
-        code == expected && date >= start && date <= end,
+        code == expected && range.contains(date),
         "接口返回了请求范围外的数据 {code} {date}"
     );
 }
@@ -618,7 +618,7 @@ impl DataProvider for TushareProvider {
                 .unwrap_or_else(|err| panic!("{err:#}"))
             {
                 let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
-                check_row(&row.ts_code, &code, date, start, end);
+                check_row(&row.ts_code, &code, date, range);
                 assert!(
                     row.adj_factor.is_finite() && row.adj_factor > 0.0,
                     "{date} 复权因子必须为正数"
@@ -634,7 +634,7 @@ impl DataProvider for TushareProvider {
                 .unwrap_or_else(|err| panic!("{err:#}"))
             {
                 let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
-                check_row(&row.ts_code, &code, date, start, end);
+                check_row(&row.ts_code, &code, date, range);
                 insert_unique(&mut limits, date, row);
             }
             // 名单只包含当日 ST/*ST 股票；成功查询后未出现的日期即非 ST。
@@ -647,12 +647,12 @@ impl DataProvider for TushareProvider {
                 .unwrap_or_else(|err| panic!("stock_st 数据无效: {err:#}"))
             {
                 let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
-                check_row(&row.ts_code, &code, date, start, end);
+                check_row(&row.ts_code, &code, date, range);
                 insert_unique(&mut st_dates, date, ());
             }
             for row in daily {
                 let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
-                check_row(&row.ts_code, &code, date, start, end);
+                check_row(&row.ts_code, &code, date, range);
                 let factor = factors
                     .get(&date)
                     .copied()
@@ -703,8 +703,7 @@ impl DataProvider for TushareProvider {
     }
 
     async fn index_comp(&mut self, symbol: &str, range: DateRange) -> IndexHistComp {
-        let (start, end) = (range.start(), range.end());
-        self.fetch_index_comp(symbol, start, end)
+        self.fetch_index_comp(symbol, range)
             .await
             .unwrap_or_else(|err| panic!("指数成分查询失败: {err:#}"))
     }

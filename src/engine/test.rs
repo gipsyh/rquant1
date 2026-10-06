@@ -103,7 +103,9 @@ impl Strategy for Probe {
     }
     async fn on_trade_day(&mut self, ctx: &BtContext<'_>) -> Vec<Vec<Order>> {
         if self.read_history {
-            let bars = ctx.stock_bars(a(), ctx.date(), ctx.date()).await;
+            let bars = ctx
+                .stock_bars(a(), DateRange::new(ctx.date(), ctx.date()))
+                .await;
             assert_eq!(bars[0].date, ctx.date());
         }
         self.observations
@@ -546,7 +548,7 @@ async fn close_context_still_rejects_future_history() {
         positions: &positions,
         provider: tokio::sync::Mutex::new(&mut provider),
     };
-    ctx.stock_bars(a(), FIRST, NEXT).await;
+    ctx.stock_bars(a(), DateRange::new(FIRST, NEXT)).await;
 }
 
 #[tokio::test]
@@ -568,7 +570,7 @@ async fn stock_bars_keeps_raw_prices_and_adjustment_is_explicit() {
         positions: &positions,
         provider: tokio::sync::Mutex::new(&mut provider),
     };
-    let bars = ctx.stock_bars(a(), FIRST, NEXT).await;
+    let bars = ctx.stock_bars(a(), DateRange::new(FIRST, NEXT)).await;
     assert_eq!(
         bars.iter().map(|bar| bar.close).collect::<Vec<_>>(),
         vec![20.0, 10.0]
@@ -604,7 +606,7 @@ async fn stock_bars_keeps_raw_prices_and_adjustment_is_explicit() {
             assert!(rbt::validate_bar(adjusted_bar, require_factor).is_err());
         }
     }
-    assert_eq!(ctx.stock_bars(a(), FIRST, NEXT).await, bars);
+    assert_eq!(ctx.stock_bars(a(), DateRange::new(FIRST, NEXT)).await, bars);
 }
 
 #[tokio::test]
@@ -631,7 +633,7 @@ async fn stock_bars_panics_for_adjusted_or_missing_factor_data() {
                 positions: &positions,
                 provider: tokio::sync::Mutex::new(&mut provider),
             };
-            ctx.stock_bars(a(), FIRST, NEXT).await;
+            ctx.stock_bars(a(), DateRange::new(FIRST, NEXT)).await;
         })
         .await
         .unwrap_err();
@@ -860,7 +862,8 @@ async fn index_context_rejects_future_composition_before_provider_access() {
         provider: tokio::sync::Mutex::new(&mut provider),
     };
     let _guard = ctx.provider.lock().await;
-    ctx.index_comp("399101.XSHE", FIRST, NEXT).await;
+    ctx.index_comp("399101.XSHE", DateRange::new(FIRST, NEXT))
+        .await;
 }
 
 #[tokio::test]
@@ -878,13 +881,19 @@ async fn stocks_bars_keeps_raw_data_empty_symbols_and_rejects_future_dates() {
         positions: &positions,
         provider: tokio::sync::Mutex::new(&mut provider),
     };
-    let results = ctx.stocks_bars(&[b(), a(), a()], FIRST, FIRST).await;
+    let results = ctx
+        .stocks_bars(&[b(), a(), a()], DateRange::new(FIRST, FIRST))
+        .await;
     assert_eq!(results.len(), 2);
     assert_eq!(results[&a()], vec![bar(a(), FIRST)]);
     assert!(results[&b()].is_empty());
-    assert!(ctx.stocks_bars(&[], FIRST, FIRST).await.is_empty());
     assert!(
-        std::panic::AssertUnwindSafe(ctx.stocks_bars(&[a()], FIRST, NEXT))
+        ctx.stocks_bars(&[], DateRange::new(FIRST, FIRST))
+            .await
+            .is_empty()
+    );
+    assert!(
+        std::panic::AssertUnwindSafe(ctx.stocks_bars(&[a()], DateRange::new(FIRST, NEXT)))
             .catch_unwind()
             .await
             .is_err()

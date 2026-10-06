@@ -11,39 +11,29 @@ pub(crate) mod test;
 /// 缓存日线和指数成分，交易日历直接转发给底层数据源。
 pub struct MemCacheProvider {
     provider: Box<dyn DataProvider>,
-    start: Date,
-    end: Date,
+    /// 首次访问股票或指数时预取的日期闭区间。
+    range: DateRange,
     pub(super) data: RqData,
 }
 
 impl MemCacheProvider {
-    async fn download_index(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
-        let comp = self
-            .provider
-            .index_comp(symbol, DateRange::new(start, end))
-            .await;
-        assert_eq!(
-            comp.range(),
-            DateRange::new(start, end),
-            "指数成分覆盖区间不匹配"
-        );
+    async fn download_index(&mut self, symbol: &str, range: DateRange) -> IndexHistComp {
+        let comp = self.provider.index_comp(symbol, range).await;
+        assert_eq!(comp.range(), range, "指数成分覆盖区间不匹配");
         comp.validate()
             .unwrap_or_else(|err| panic!("指数成分无效: {symbol}: {err:#}"));
         comp
     }
 
-    pub fn new(provider: Box<dyn DataProvider>, start: Date, end: Date) -> Self {
-        assert!(start <= end, "缓存开始日期不能晚于结束日期");
+    pub fn new(provider: Box<dyn DataProvider>, range: DateRange) -> Self {
         Self {
             provider,
-            start,
-            end,
+            range,
             data: RqData::default(),
         }
     }
 
-    async fn download(&mut self, symbol: StockSymbol, start: Date, end: Date) -> StockHistBar {
-        let range = DateRange::new(start, end);
+    async fn download(&mut self, symbol: StockSymbol, range: DateRange) -> StockHistBar {
         let hist = self.provider.stock_bar(symbol, range).await;
         assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
         hist.validate()
@@ -94,18 +84,16 @@ impl DataProvider for MemCacheProvider {
     }
 
     async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> StockHistBar {
-        let (start, end) = (range.start(), range.end());
-        if let Some(range) = self
+        if let Some(cached) = self
             .data
             .stock
             .get(&symbol)
             .and_then(|stock| stock.bars.as_ref().map(StockHistBar::range))
         {
             // 历史预热或更宽的查询仅补拉已下载区间外的部分。
-            if start < range.start() {
-                let bars = self
-                    .download(symbol, start, range.start().previous_day().unwrap())
-                    .await;
+            if range.start() < cached.start() {
+                let gap = DateRange::new(range.start(), cached.start().previous_day().unwrap());
+                let bars = self.download(symbol, gap).await;
                 self.data
                     .stock
                     .get_mut(&symbol)
@@ -115,10 +103,9 @@ impl DataProvider for MemCacheProvider {
                     .unwrap()
                     .extend(bars);
             }
-            if end > range.end() {
-                let bars = self
-                    .download(symbol, range.end().next_day().unwrap(), end)
-                    .await;
+            if range.end() > cached.end() {
+                let gap = DateRange::new(cached.end().next_day().unwrap(), range.end());
+                let bars = self.download(symbol, gap).await;
                 self.data
                     .stock
                     .get_mut(&symbol)
@@ -130,16 +117,14 @@ impl DataProvider for MemCacheProvider {
             }
         } else {
             self.stock_info(symbol).await;
-            let bars = self
-                .download(symbol, self.start.min(start), self.end.max(end))
-                .await;
+            let bars = self.download(symbol, self.range.union(range)).await;
             self.data.stock.get_mut(&symbol).unwrap().bars = Some(bars);
         }
         self.data.stock[&symbol]
             .bars
             .as_ref()
             .unwrap()
-            .slice(start, end)
+            .slice(range)
             .unwrap()
     }
 
@@ -170,35 +155,29 @@ impl DataProvider for MemCacheProvider {
         for &(symbol, range) in requests {
             ranges
                 .entry(symbol)
-                .and_modify(|existing| {
-                    existing.set(
-                        existing.start().min(range.start()),
-                        existing.end().max(range.end()),
-                    );
-                })
+                .and_modify(|existing| *existing = existing.union(range))
                 .or_insert(range);
         }
         self.stocks_info(&ranges.keys().copied().collect::<Vec<_>>())
             .await;
         let mut missing = Vec::new();
         for (&symbol, range) in &ranges {
-            let (start, end) = (range.start(), range.end());
-            if let Some(hist) = &self.data.stock[&symbol].bars {
-                let range = hist.range();
-                if start < range.start() {
+            if let Some(cached) = &self.data.stock[&symbol].bars {
+                let cached = cached.range();
+                if range.start() < cached.start() {
                     missing.push((
                         symbol,
-                        DateRange::new(start, range.start().previous_day().unwrap()),
+                        DateRange::new(range.start(), cached.start().previous_day().unwrap()),
                     ));
                 }
-                if end > range.end() {
-                    missing.push((symbol, DateRange::new(range.end().next_day().unwrap(), end)));
+                if range.end() > cached.end() {
+                    missing.push((
+                        symbol,
+                        DateRange::new(cached.end().next_day().unwrap(), range.end()),
+                    ));
                 }
             } else {
-                missing.push((
-                    symbol,
-                    DateRange::new(self.start.min(start), self.end.max(end)),
-                ));
+                missing.push((symbol, self.range.union(*range)));
             }
         }
         if !missing.is_empty() {
@@ -222,12 +201,11 @@ impl DataProvider for MemCacheProvider {
         requests
             .iter()
             .map(|&(symbol, range)| {
-                let (start, end) = (range.start(), range.end());
                 self.data.stock[&symbol]
                     .bars
                     .as_ref()
                     .unwrap()
-                    .slice(start, end)
+                    .slice(range)
                     .unwrap()
             })
             .collect()
@@ -244,26 +222,21 @@ impl DataProvider for MemCacheProvider {
     }
 
     async fn index_comp(&mut self, symbol: &str, range: DateRange) -> IndexHistComp {
-        let (start, end) = (range.start(), range.end());
         let symbol = normalize_index_symbol(symbol).unwrap_or_else(|err| panic!("{err:#}"));
-        if let Some(range) = self.data.index.get(&symbol).map(|index| index.comp.range()) {
-            if start < range.start() {
-                let comp = self
-                    .download_index(&symbol, start, range.start().previous_day().unwrap())
-                    .await;
+        if let Some(cached) = self.data.index.get(&symbol).map(|index| index.comp.range()) {
+            if range.start() < cached.start() {
+                let gap = DateRange::new(range.start(), cached.start().previous_day().unwrap());
+                let comp = self.download_index(&symbol, gap).await;
                 self.data.index.get_mut(&symbol).unwrap().comp.extend(comp);
             }
-            if end > range.end() {
-                let comp = self
-                    .download_index(&symbol, range.end().next_day().unwrap(), end)
-                    .await;
+            if range.end() > cached.end() {
+                let gap = DateRange::new(cached.end().next_day().unwrap(), range.end());
+                let comp = self.download_index(&symbol, gap).await;
                 self.data.index.get_mut(&symbol).unwrap().comp.extend(comp);
             }
         } else {
             let name = self.index_name(&symbol).await;
-            let comp = self
-                .download_index(&symbol, self.start.min(start), self.end.max(end))
-                .await;
+            let comp = self.download_index(&symbol, self.range.union(range)).await;
             self.data.index.insert(
                 symbol.clone(),
                 Index {
@@ -273,6 +246,6 @@ impl DataProvider for MemCacheProvider {
                 },
             );
         }
-        self.data.index[&symbol].comp.slice(start, end).unwrap()
+        self.data.index[&symbol].comp.slice(range).unwrap()
     }
 }

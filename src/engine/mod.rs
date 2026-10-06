@@ -129,16 +129,9 @@ impl BtContext<'_> {
     }
 
     /// 查询当前日期及以前的指数成分历史，通过 composition(date) 获取已生效成分。
-    pub async fn index_comp(&self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
-        assert!(
-            start <= end && end <= self.date,
-            "指数成分查询区间无效或包含未来数据"
-        );
-        self.provider
-            .lock()
-            .await
-            .index_comp(symbol, DateRange::new(start, end))
-            .await
+    pub async fn index_comp(&self, symbol: &str, range: DateRange) -> IndexHistComp {
+        assert!(range.end() <= self.date, "指数成分查询区间包含未来数据");
+        self.provider.lock().await.index_comp(symbol, range).await
     }
 
     /// 查询当日或历史日期是否有日线且非 ST；不保证下一交易日订单能成交。
@@ -152,34 +145,23 @@ impl BtContext<'_> {
     pub async fn stocks_bars(
         &self,
         symbols: &[StockSymbol],
-        start: Date,
-        end: Date,
+        range: DateRange,
     ) -> BTreeMap<StockSymbol, Vec<StockBar>> {
-        assert!(
-            start <= end && end <= self.date,
-            "历史查询区间无效或包含未来数据"
-        );
+        assert!(range.end() <= self.date, "历史查询区间包含未来数据");
         let symbols: Vec<_> = symbols
             .iter()
             .copied()
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
-        let requests: Vec<_> = symbols
-            .iter()
-            .map(|&s| (s, DateRange::new(start, end)))
-            .collect();
+        let requests: Vec<_> = symbols.iter().map(|&s| (s, range)).collect();
         let results = self.provider.lock().await.stocks_bar(&requests).await;
         assert_eq!(results.len(), requests.len(), "日线批量结果数量不匹配");
         symbols
             .into_iter()
             .zip(results)
             .map(|(symbol, hist)| {
-                assert_eq!(
-                    hist.range(),
-                    DateRange::new(start, end),
-                    "日线历史覆盖区间不匹配"
-                );
+                assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
                 hist.validate().unwrap();
                 for bar in hist.bars() {
                     assert_eq!(bar.symbol, symbol, "批量日线返回非请求股票");
@@ -192,13 +174,10 @@ impl BtContext<'_> {
 
     /// 查询闭区间内的原始日线和复权因子，允许回溯至回测开始日以前。
     /// 不复权价格；区间无行情时返回空 Vec，日期或数据无效时 panic。
-    pub async fn stock_bars(&self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
-        assert!(
-            start <= end && end <= self.date,
-            "历史查询区间无效或包含未来数据"
-        );
+    pub async fn stock_bars(&self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+        assert!(range.end() <= self.date, "历史查询区间包含未来数据");
         let mut provider = self.provider.lock().await;
-        rbt::load_bars(&mut **provider, symbol, start, end, true).await
+        rbt::load_bars(&mut **provider, symbol, range, true).await
     }
 }
 
