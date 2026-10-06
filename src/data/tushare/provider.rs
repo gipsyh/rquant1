@@ -680,7 +680,7 @@ impl DataProvider for TushareProvider {
         StockHistBar::new(range, bars.into_values().collect()).unwrap()
     }
 
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
+    async fn stocks_bar(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         // 每项复用完整的单股票处理流程；共享 HTTP 连接池和请求信号量。
         // buffered 保持输入顺序，最多同时处理 4 项，失败沿用 stock_bar 的 panic。
         stream::iter(requests.iter().copied().map(|(symbol, range)| {

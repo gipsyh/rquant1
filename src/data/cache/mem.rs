@@ -146,7 +146,7 @@ impl DataProvider for MemCacheProvider {
         symbols.iter().map(|s| self.data.stock[s].info()).collect()
     }
 
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
+    async fn stocks_bar(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         // 同一股票的重复/重叠请求先合并，避免并发下载相同区间。
         let mut ranges: BTreeMap<StockSymbol, DateRange> = BTreeMap::new();
         for &(symbol, range) in requests {
@@ -184,7 +184,7 @@ impl DataProvider for MemCacheProvider {
             }
         }
         if !missing.is_empty() {
-            let results = self.provider.stocks_bars(&missing).await;
+            let results = self.provider.stocks_bar(&missing).await;
             assert_eq!(results.len(), missing.len(), "日线批量结果数量不匹配");
             for ((symbol, range), hist) in missing.into_iter().zip(results) {
                 assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");

@@ -122,7 +122,7 @@ impl DataProvider for Provider {
         vec![start]
     }
 
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
+    async fn stocks_bar(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         self.batch_sizes.lock().unwrap().push(requests.len());
         let mut results = Vec::new();
         for &(symbol, range) in requests {
@@ -663,7 +663,7 @@ async fn batch_cache_deduplicates_extends_and_persists_empty_history() {
         (a, DateRange::new(middle, last)),
     ];
     assert_eq!(
-        cache.stocks_bars(&query).await,
+        cache.stocks_bar(&query).await,
         vec![
             StockHistBar::new(DateRange::new(middle, middle), vec![bar(a, middle)]).unwrap(),
             StockHistBar::new(DateRange::new(middle, middle), vec![]).unwrap(),
@@ -675,11 +675,11 @@ async fn batch_cache_deduplicates_extends_and_persists_empty_history() {
         *requests.lock().unwrap(),
         vec![(a, middle, last), (b, middle, last)]
     );
-    cache.stocks_bars(&query).await;
+    cache.stocks_bar(&query).await;
     assert_eq!(*batch_sizes.lock().unwrap(), vec![2]);
     let after = last.next_day().unwrap();
     cache
-        .stocks_bars(&[
+        .stocks_bar(&[
             (a, DateRange::new(first, after)),
             (b, DateRange::new(first, after)),
         ])
@@ -699,7 +699,7 @@ async fn batch_cache_deduplicates_extends_and_persists_empty_history() {
     let mut cache =
         DiskCacheProvider::with_path(provider(vec![], &requests), first, after, path).unwrap();
     assert_eq!(
-        cache.stocks_bars(&query).await,
+        cache.stocks_bar(&query).await,
         vec![
             StockHistBar::new(DateRange::new(middle, middle), vec![bar(a, middle)]).unwrap(),
             StockHistBar::new(DateRange::new(middle, middle), vec![]).unwrap(),

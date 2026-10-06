@@ -70,7 +70,7 @@ impl DataProvider for Source {
             bars: None,
         }
     }
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
+    async fn stocks_bar(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         self.batch_sizes.push(requests.len());
         let mut results = Vec::new();
         for &(symbol, range) in requests {

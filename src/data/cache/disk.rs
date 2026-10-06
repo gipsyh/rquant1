@@ -122,8 +122,8 @@ impl DataProvider for DiskCacheProvider {
         self.inner.stock_bar(symbol, range).await
     }
 
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
-        self.inner.stocks_bars(requests).await
+    async fn stocks_bar(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
+        self.inner.stocks_bar(requests).await
     }
 
     async fn index_name(&mut self, symbol: &str) -> String {

@@ -1178,7 +1178,7 @@ async fn stocks_bars_runs_four_downloads_and_respects_shared_http_limit() {
                 )
             })
             .collect();
-        let batch = cache.stocks_bars(&requests);
+        let batch = cache.stocks_bar(&requests);
         tokio::pin!(batch);
         let expected = 4.min(http_limit);
         tokio::select! {
@@ -1253,7 +1253,7 @@ async fn stocks_bars_preserves_request_order_and_empty_results() {
         .map(|&s| (s, DateRange::new(day, day)))
         .collect();
     let mut provider = provider(&server);
-    let results = provider.stocks_bars(&requests).await;
+    let results = provider.stocks_bar(&requests).await;
     assert_eq!(results.len(), 3);
     assert!(results[1].bars().is_empty());
     assert!(
@@ -1270,7 +1270,7 @@ async fn stocks_bars_preserves_request_order_and_empty_results() {
                 .into_bars()
         );
     }
-    assert!(provider.stocks_bars(&[]).await.is_empty());
+    assert!(provider.stocks_bar(&[]).await.is_empty());
 }
 
 async fn stock_info_batch_response(server: &MockServer, codes: &str, status: &str, rows: Value) {

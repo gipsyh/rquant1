@@ -169,7 +169,7 @@ impl BtContext<'_> {
             .iter()
             .map(|&s| (s, DateRange::new(start, end)))
             .collect();
-        let results = self.provider.lock().await.stocks_bars(&requests).await;
+        let results = self.provider.lock().await.stocks_bar(&requests).await;
         assert_eq!(results.len(), requests.len(), "日线批量结果数量不匹配");
         symbols
             .into_iter()

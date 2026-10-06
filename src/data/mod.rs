@@ -366,7 +366,7 @@ pub trait DataProvider: Send + Sync {
     /// 批量日线请求，每项为（股票、日期闭区间）。
     /// 返回历史与请求逐项对应，覆盖区间等于请求区间，空行情也保留覆盖区间。
     /// 默认串行，数据源可覆盖为并发。
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
+    async fn stocks_bar(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         let mut results = Vec::with_capacity(requests.len());
         for &(symbol, range) in requests {
             results.push(self.stock_bar(symbol, range).await);
