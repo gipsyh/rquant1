@@ -94,16 +94,11 @@ impl TushareProvider {
                         "index_code" => code.clone(),
                         "start_date" => api_date(cursor),
                         "end_date" => api_date(month_end),
-                        "limit" => 6000,
+                        "limit" => Self::api_max_rows("index_weight").unwrap(),
                     },
                     "index_code,con_code,trade_date,weight",
                 )
                 .await?;
-            // 与 Python 版本一致：达到上限时拒绝可能截断的月份，不缓存部分成分。
-            ensure!(
-                table.len() < 6000,
-                "{code} {cursor} 返回达到 6000 行上限，可能被截断"
-            );
             for row in table.to_typed::<IndexWeight>()? {
                 let date = parse_date(&row.trade_date)?;
                 ensure!(
@@ -290,7 +285,7 @@ mod test {
     }
 
     #[tokio::test]
-    async fn rejects_invalid_rows_duplicate_members_and_truncated_months() {
+    async fn rejects_invalid_rows_and_duplicate_members() {
         let row = json!(["000300.SH", "600000.SH", "20231229", 50.0]);
         let cases = [
             (json!([row.clone(), row.clone()]), "重复成分"),
@@ -314,7 +309,6 @@ mod test {
                 json!([["000300.SH", "600000.SH", "20231229", null]]),
                 "反序列化",
             ),
-            (Value::Array(vec![row; 6000]), "6000 行上限"),
         ];
         for (rows, expected) in cases {
             let server = MockServer::start().await;
@@ -325,6 +319,24 @@ mod test {
                 .unwrap_err();
             assert!(format!("{err:#}").contains(expected), "{err:#}");
         }
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "6000 行上限")]
+    async fn truncated_month_panics_before_parsing_or_caching_members() {
+        let server = MockServer::start().await;
+        let row = json!(["000300.SH", "600000.SH", "20231229", 50.0]);
+        month(
+            &server,
+            "20231201",
+            "20231231",
+            Value::Array(vec![row; 6000]),
+        )
+        .await;
+        provider(&server)
+            .fetch_index_comp("000300", date!(2024 - 01 - 01), date!(2024 - 01 - 31))
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

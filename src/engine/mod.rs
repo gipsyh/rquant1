@@ -3,7 +3,7 @@ mod rbt;
 #[cfg(test)]
 mod test;
 
-use crate::data::{DataProvider, StockBar, StockSymbol};
+use crate::data::{DataProvider, IndexHistComp, Stock, StockBar, StockSymbol};
 use crate::utils::{latest_rqdate, parse_date};
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser};
@@ -99,6 +99,24 @@ impl BtContext<'_> {
 
     pub fn position(&self, symbol: StockSymbol) -> Option<&Position> {
         self.positions.get(&symbol)
+    }
+
+    /// 查询股票基础信息；名称、行业为数据源的静态信息，不代表回测日历史状态。
+    pub async fn stock_info(&self, symbol: StockSymbol) -> Stock {
+        self.provider.lock().await.stock_info(symbol).await
+    }
+
+    /// 查询当前日期及以前的指数成分历史，通过 composition(date) 获取已生效成分。
+    pub async fn index_comp(&self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
+        assert!(
+            start <= end && end <= self.date,
+            "指数成分查询区间无效或包含未来数据"
+        );
+        self.provider
+            .lock()
+            .await
+            .index_comp(symbol, start, end)
+            .await
     }
 
     /// 查询当日或历史日期是否有日线且非 ST；不保证下一交易日订单能成交。

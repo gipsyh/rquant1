@@ -160,12 +160,14 @@ fn factor(bar: &StockBar, adjusted: bool) -> f64 {
 }
 
 pub(super) fn validate_bar(bar: &StockBar, adjusted: bool) -> Result<()> {
+    assert!(
+        bar.volume.is_finite() && bar.volume > 0.0,
+        "日线成交量必须为有限正数"
+    );
     let prices = [bar.open, bar.high, bar.low, bar.close];
     if prices.iter().any(|v| !v.is_finite() || *v <= 0.0)
         || bar.low > bar.open.min(bar.close)
         || bar.high < bar.open.max(bar.close)
-        || !bar.volume.is_finite()
-        || bar.volume < 0.0
         || !bar.turnover.is_finite()
         || bar.turnover < 0.0
         || [bar.limit_up, bar.limit_down]

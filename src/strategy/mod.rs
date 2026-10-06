@@ -1,8 +1,10 @@
 mod buy_and_hold;
+mod low_turnover_trend;
 mod ma_cross;
 use crate::engine::{BtContext, Order, OrderFailure};
 pub use buy_and_hold::{BuyAndHold, BuyAndHoldConfig};
 use clap::Subcommand;
+pub use low_turnover_trend::{LowTurnoverTrend, LowTurnoverTrendConfig};
 pub use ma_cross::{MaCross, MaCrossConfig};
 
 #[derive(Subcommand, Clone, Debug)]
@@ -13,6 +15,9 @@ pub enum StrategyConfig {
     /// 短期均线上穿长期均线买入，下穿时清仓
     #[command(alias = "ma_cross")]
     MaCross(MaCrossConfig),
+    /// 按低成交额选股，趋势状态控制新增股票的现金买入比例
+    #[command(alias = "low_turnover_trend")]
+    LowTurnoverTrend(LowTurnoverTrendConfig),
 }
 
 impl StrategyConfig {
@@ -20,6 +25,7 @@ impl StrategyConfig {
         match self {
             Self::BuyAndHold(config) => Box::new(BuyAndHold::new(config)),
             Self::MaCross(config) => Box::new(MaCross::new(config)),
+            Self::LowTurnoverTrend(config) => Box::new(LowTurnoverTrend::new(config)),
         }
     }
 }

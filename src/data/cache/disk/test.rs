@@ -489,10 +489,7 @@ async fn tradability_uses_historical_st_and_extends_and_reloads_cached_coverage(
     let st_day = date!(2024 - 01 - 04);
     let recovered = date!(2024 - 01 - 05);
     let bars = vec![
-        StockBar {
-            volume: 0.0,
-            ..bar(symbol, first)
-        },
+        bar(symbol, first),
         StockBar {
             st: true,
             ..bar(symbol, st_day)

@@ -817,3 +817,38 @@ async fn context_tradability_rejects_future_dates_before_provider_access() {
     let _guard = ctx.provider.lock().await;
     ctx.is_tradable(a(), NEXT).await;
 }
+
+mod low_turnover_trend;
+
+#[test]
+fn volume_must_be_finite_and_strictly_positive() {
+    use crate::{data::StockHistBar, utils::DateRange};
+    for volume in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let bar = StockBar {
+            volume,
+            ..bar(a(), FIRST)
+        };
+        assert!(std::panic::catch_unwind(|| rbt::validate_bar(&bar, true)).is_err());
+        assert!(
+            std::panic::catch_unwind(|| StockHistBar::new(DateRange::new(FIRST, FIRST), vec![bar]))
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+#[should_panic(expected = "未来数据")]
+async fn index_context_rejects_future_composition_before_provider_access() {
+    let mut provider = Provider::default();
+    let positions = BTreeMap::new();
+    let ctx = BtContext {
+        date: FIRST,
+        init_cash: 1000.0,
+        cash: 1000.0,
+        equity: 1000.0,
+        positions: &positions,
+        provider: tokio::sync::Mutex::new(&mut provider),
+    };
+    let _guard = ctx.provider.lock().await;
+    ctx.index_comp("399101.XSHE", FIRST, NEXT).await;
+}

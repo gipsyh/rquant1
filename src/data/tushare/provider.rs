@@ -187,6 +187,7 @@ impl TushareProvider {
     ///
     /// 未提供具名方法的接口走这里，这正是 Python `__getattr__`
     /// 提供的逃生通道。
+    /// 已配置上限的接口返回达到上限时直接 panic，避免接收可能截断的数据。
     pub async fn query(&self, api_name: &str, params: Params, fields: &str) -> Result<Table> {
         let mut params = params;
         // 对齐 client.py:34 —— Python 每次请求都会把 base_url 作为 ts_type_name 塞进 params。
@@ -220,6 +221,20 @@ impl TushareProvider {
                     let data = parsed.data.with_context(|| {
                         format!("响应结构异常: [{api_name}] code=0 但响应缺少 data 字段")
                     })?;
+                    // 恰好达到上限也无法排除截断；不分页、不重试拆分。
+                    if let Some(max_rows) = Self::api_max_rows(api_name) {
+                        assert!(
+                            data.items.len() < max_rows,
+                            "tushare [{api_name}] symbol={}, start={}, end={} 返回 {} 行，达到或超过 {max_rows} 行上限，可能被截断",
+                            body["params"]
+                                .get("ts_code")
+                                .or_else(|| body["params"].get("index_code"))
+                                .unwrap_or(&Value::Null),
+                            body["params"]["start_date"],
+                            body["params"]["end_date"],
+                            data.items.len(),
+                        );
+                    }
                     return Table::new(data.fields, data.items);
                 }
                 Ok(parsed) => {
@@ -274,8 +289,16 @@ impl TushareProvider {
 
 // 生成具名接口方法，等价于 Python 客户端 __getattr__ 的动态接口调用。
 macro_rules! tushare_apis {
-    ($($(#[$attr:meta])* $name:ident),* $(,)?) => {
+    ($($(#[$attr:meta])* $name:ident => $max_rows:expr),* $(,)?) => {
         impl TushareProvider {
+            // 具名接口和直接 query 共用同一份配置；None 表示未配置，非无限制。
+            pub(super) fn api_max_rows(api_name: &str) -> Option<usize> {
+                match api_name {
+                    $(stringify!($name) => $max_rows,)*
+                    _ => None,
+                }
+            }
+
             $(
                 $(#[$attr])*
                 ///
@@ -292,31 +315,33 @@ macro_rules! tushare_apis {
     };
 }
 
+// 上限于 2026-10-06 核对官方文档；未注明数字的接口显式标为 None。
 tushare_apis! {
-    /// 日线行情（股票）。
-    daily,
-    /// 每日指标：流通市值、换手率、估值等。
-    daily_basic,
-    /// 复权因子。
-    adj_factor,
-    /// 每日涨跌停价格。
-    stk_limit,
-    /// 股票基础信息。
-    stock_basic,
-    /// 历史每日 ST/*ST 股票列表。
-    stock_st,
-    /// 股票曾用名。
-    namechange,
-    /// 每日停复牌信息。
-    suspend_d,
-    /// 交易日历。
-    trade_cal,
-    /// 指数基础信息。
-    index_basic,
-    /// 指数日线行情。
-    index_daily,
-    /// 指数成分和权重。
-    index_weight,
+    /// [日线行情（股票）](https://tushare.pro/document/2?doc_id=27)，单次 6000 行。
+    daily => Some(6000),
+    /// [每日指标](https://tushare.pro/document/2?doc_id=32)，单次 6000 行。
+    daily_basic => Some(6000),
+    /// [复权因子](https://tushare.pro/document/2?doc_id=28)，文档未注明行数上限。
+    adj_factor => None,
+    /// [每日涨跌停价格](https://tushare.pro/document/2?doc_id=183)，单次 5800 行。
+    stk_limit => Some(5800),
+    /// [股票基础信息](https://tushare.pro/document/2?doc_id=25)，单次 6000 行。
+    stock_basic => Some(6000),
+    /// [历史每日 ST/*ST 股票列表](https://tushare.pro/document/2?doc_id=397)，单次 1000 行。
+    stock_st => Some(1000),
+    /// [股票曾用名](https://tushare.pro/document/2?doc_id=100)，文档未注明行数上限。
+    namechange => None,
+    /// [每日停复牌信息](https://tushare.pro/document/2?doc_id=214)，单次 5000 行。
+    suspend_d => Some(5000),
+    /// [交易日历](https://tushare.pro/document/2?doc_id=26)，文档未注明行数上限。
+    trade_cal => None,
+    /// [指数基础信息](https://tushare.pro/document/2?doc_id=94)，单次 8000 行。
+    index_basic => Some(8000),
+    /// [指数日线行情](https://tushare.pro/document/2?doc_id=95)，文档未注明行数上限。
+    index_daily => None,
+    /// [指数成分和权重](https://tushare.pro/document/2?doc_id=96)，文档未注明行数上限。
+    /// 保留项目现有的 6000 行请求限制和截断保护，并非已核实的官方上限。
+    index_weight => Some(6000),
 }
 
 /// 服务端没有稳定的限流错误码，保留按文案识别的启发式规则。
@@ -546,111 +571,99 @@ impl DataProvider for TushareProvider {
         );
         let code = symbol.tushare_code();
         let mut bars = BTreeMap::new();
-        let mut cursor = start;
-        // 每次至多一个自然年的单只股票，低于这些接口的单次行数限制。
-        // 使用不重叠的闭区间，避免长回测被服务端悄悄截断。
-        loop {
-            let chunk_end = end.min(
-                Date::from_calendar_date(cursor.year(), Month::December, 31)
-                    .expect("无法构造年末日期"),
-            );
-            let params = params! {
-                "ts_code" => code.clone(),
-                "start_date" => api_date(cursor),
-                "end_date" => api_date(chunk_end),
-            };
-            log::debug!(
-                "下载日线 bar: symbol={code}, start={}, end={}",
-                api_date(cursor),
-                api_date(chunk_end),
-            );
-            let daily = self
-                .daily(
-                    params.clone(),
-                    "ts_code,trade_date,open,high,low,close,vol,amount",
-                )
+        // 单只股票按完整请求区间查询；已知上限由 query 检查。
+        let params = params! {
+            "ts_code" => code.clone(),
+            "start_date" => api_date(start),
+            "end_date" => api_date(end),
+        };
+        log::debug!(
+            "下载日线 bar: symbol={code}, start={}, end={}",
+            api_date(start),
+            api_date(end),
+        );
+        let daily = self
+            .daily(
+                params.clone(),
+                "ts_code,trade_date,open,high,low,close,vol,amount",
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{err:#}"))
+            .to_typed::<Daily>()
+            .unwrap_or_else(|err| panic!("{err:#}"));
+        if !daily.is_empty() {
+            // adj_factor 文档未注明行数上限；下方逐根日线检查因子完整性。
+            let mut factors = BTreeMap::new();
+            for row in self
+                .adj_factor(params.clone(), "ts_code,trade_date,adj_factor")
                 .await
                 .unwrap_or_else(|err| panic!("{err:#}"))
-                .to_typed::<Daily>()
-                .unwrap_or_else(|err| panic!("{err:#}"));
-            if !daily.is_empty() {
-                let mut factors = BTreeMap::new();
-                for row in self
-                    .adj_factor(params.clone(), "ts_code,trade_date,adj_factor")
-                    .await
-                    .unwrap_or_else(|err| panic!("{err:#}"))
-                    .to_typed::<Factor>()
-                    .unwrap_or_else(|err| panic!("{err:#}"))
-                {
-                    let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
-                    check_row(&row.ts_code, &code, date, cursor, chunk_end);
-                    assert!(
-                        row.adj_factor.is_finite() && row.adj_factor > 0.0,
-                        "{date} 复权因子必须为正数"
-                    );
-                    insert_unique(&mut factors, date, row.adj_factor);
-                }
-                let mut limits = BTreeMap::new();
-                for row in self
-                    .stk_limit(params.clone(), "ts_code,trade_date,up_limit,down_limit")
-                    .await
-                    .unwrap_or_else(|err| panic!("{err:#}"))
-                    .to_typed::<Limit>()
-                    .unwrap_or_else(|err| panic!("{err:#}"))
-                {
-                    let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
-                    check_row(&row.ts_code, &code, date, cursor, chunk_end);
-                    insert_unique(&mut limits, date, row);
-                }
-                // 单只股票按年查询，最多 366 个日期，低于 stock_st 的 1000 行上限。
-                // 名单只包含当日 ST/*ST 股票；成功查询后未出现的日期即非 ST。
-                let mut st_dates = BTreeMap::new();
-                for row in self
-                    .stock_st(params, "ts_code,trade_date")
-                    .await
-                    .unwrap_or_else(|err| panic!("stock_st 查询失败: {err:#}"))
-                    .to_typed::<StStatus>()
-                    .unwrap_or_else(|err| panic!("stock_st 数据无效: {err:#}"))
-                {
-                    let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
-                    check_row(&row.ts_code, &code, date, cursor, chunk_end);
-                    insert_unique(&mut st_dates, date, ());
-                }
-                for row in daily {
-                    let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
-                    check_row(&row.ts_code, &code, date, cursor, chunk_end);
-                    let factor = factors
-                        .get(&date)
-                        .copied()
-                        .unwrap_or_else(|| panic!("{code} {date} 缺少复权因子"));
-                    let limit = limits
-                        .get(&date)
-                        .unwrap_or_else(|| panic!("{code} {date} 缺少涨跌停数据"));
-                    insert_unique(
-                        &mut bars,
+                .to_typed::<Factor>()
+                .unwrap_or_else(|err| panic!("{err:#}"))
+            {
+                let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
+                check_row(&row.ts_code, &code, date, start, end);
+                assert!(
+                    row.adj_factor.is_finite() && row.adj_factor > 0.0,
+                    "{date} 复权因子必须为正数"
+                );
+                insert_unique(&mut factors, date, row.adj_factor);
+            }
+            let mut limits = BTreeMap::new();
+            for row in self
+                .stk_limit(params.clone(), "ts_code,trade_date,up_limit,down_limit")
+                .await
+                .unwrap_or_else(|err| panic!("{err:#}"))
+                .to_typed::<Limit>()
+                .unwrap_or_else(|err| panic!("{err:#}"))
+            {
+                let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
+                check_row(&row.ts_code, &code, date, start, end);
+                insert_unique(&mut limits, date, row);
+            }
+            // 名单只包含当日 ST/*ST 股票；成功查询后未出现的日期即非 ST。
+            let mut st_dates = BTreeMap::new();
+            for row in self
+                .stock_st(params, "ts_code,trade_date")
+                .await
+                .unwrap_or_else(|err| panic!("stock_st 查询失败: {err:#}"))
+                .to_typed::<StStatus>()
+                .unwrap_or_else(|err| panic!("stock_st 数据无效: {err:#}"))
+            {
+                let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
+                check_row(&row.ts_code, &code, date, start, end);
+                insert_unique(&mut st_dates, date, ());
+            }
+            for row in daily {
+                let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
+                check_row(&row.ts_code, &code, date, start, end);
+                let factor = factors
+                    .get(&date)
+                    .copied()
+                    .unwrap_or_else(|| panic!("{code} {date} 缺少复权因子"));
+                let limit = limits
+                    .get(&date)
+                    .unwrap_or_else(|| panic!("{code} {date} 缺少涨跌停数据"));
+                insert_unique(
+                    &mut bars,
+                    date,
+                    StockBar {
+                        symbol,
                         date,
-                        StockBar {
-                            symbol,
-                            date,
-                            open: row.open,
-                            high: row.high,
-                            low: row.low,
-                            close: row.close,
-                            volume: row.vol * 100.0,
-                            turnover: row.amount * 1000.0,
-                            limit_up: limit.up_limit,
-                            limit_down: limit.down_limit,
-                            float_market_cap: None,
-                            adjustment: Some(Adjustment::Raw(factor)),
-                            st: st_dates.contains_key(&date),
-                        },
-                    );
-                }
+                        open: row.open,
+                        high: row.high,
+                        low: row.low,
+                        close: row.close,
+                        volume: row.vol * 100.0,
+                        turnover: row.amount * 1000.0,
+                        limit_up: limit.up_limit,
+                        limit_down: limit.down_limit,
+                        float_market_cap: None,
+                        adjustment: Some(Adjustment::Raw(factor)),
+                        st: st_dates.contains_key(&date),
+                    },
+                );
             }
-            if chunk_end == end {
-                break;
-            }
-            cursor = chunk_end.next_day().expect("日期溢出");
         }
         bars.into_values().collect()
     }

@@ -1,6 +1,6 @@
 # rquant
 
-Rust 多股票日频回测框架，保留 PyO3 Python 扩展。策略可以在运行时决定交易哪些股票，行情按需异步拉取，不要求预先声明股票池。支持买入持有和双均线金叉/死叉策略，输出组合净值、分股票持仓和买卖成交记录。
+Rust 多股票日频回测框架，保留 PyO3 Python 扩展。策略可以在运行时决定交易哪些股票，行情按需异步拉取，不要求预先声明股票池。支持买入持有、双均线金叉/死叉和地量趋势轮动策略，输出组合净值、分股票持仓和买卖成交记录。
 
 ## 快速运行
 
@@ -22,9 +22,10 @@ cargo run -- --help
 cargo run -- bt --help
 cargo run -- bt buy-and-hold --help
 cargo run -- bt ma-cross --help
+cargo run -- bt low-turnover-trend --help
 ```
 
-`bt` 由两份配置组成：公共参数 `BacktestConfig` 使用 clap flatten，策略参数 `StrategyConfig` 使用子命令。先写公共参数，再写策略名称及其专属参数。支持 `buy-and-hold`（别名 `buy_and_hold`）和 `ma-cross`（别名 `ma_cross`）。两个策略都有 `--symbol`（必填）和 `--allocation`；`ma-cross` 另有 `--short`（默认 5）和 `--long`（默认 20），要求 `0 < short < long`。
+`bt` 由两份配置组成：公共参数 `BacktestConfig` 使用 clap flatten，策略参数 `StrategyConfig` 使用子命令。先写公共参数，再写策略名称及其专属参数。支持 `buy-and-hold`（别名 `buy_and_hold`）、`ma-cross`（别名 `ma_cross`）和 `low-turnover-trend`（别名 `low_turnover_trend`）。前两个策略都有 `--symbol`（必填）和 `--allocation`；`ma-cross` 另有 `--short`（默认 5）和 `--long`（默认 20），要求 `0 < short < long`。
 
 公共参数中 `--end` 默认使用最新可取行情日期：北京时间 19:00 前取昨天，19:00 及以后取今天（不跳过非交易日）；`--start` 默认 `20200101`，起止日期均包含在回测区间内。资金、费用、滑点、交易单位、复权开关及输出路径均属于 `BacktestConfig`，应放在策略名称之前。
 
@@ -50,6 +51,25 @@ RUST_LOG=rquant=debug cargo run -- bt --start 20240101 --end 20240131 \
 买入预算为 `信号日收盘权益 × allocation / 股票数`，包含佣金，并受信号日可用现金限制。策略返回卖出、买入两个批次，下一交易日依次执行；此策略仍保守地只根据已知现金生成买入预算，不预支预期卖款。该比例用于开仓预算，不做每日仓位再平衡。停牌、涨跌停或资金不足造成未成交时，保留买入/清仓目标继续尝试，直到出现反向交叉；期末不强制清仓。
 
 Rust 侧使用 `StrategyConfig::MaCross(MaCrossConfig { symbols, short: 5, long: 20, allocation: 1.0 }).build()`，或直接 `MaCross::new(config)`，与现有引擎和 `rqdata.ron` 缓存配合使用。
+
+## 地量趋势轮动策略
+
+```bash
+cargo run -- bt --start 20191125 --end 20260928 --cash 1000000 --output low-turnover.json \
+  low-turnover-trend --symbol 399101.XSHE
+```
+
+`LowTurnoverTrend` 每日使用信号日已生效的指数成分（默认中小综指 `399101.XSHE`）。筛选上市满 120 个自然日、当日有日线且非 ST 的股票，以最近 120 根日线的平均成交额从低到高排名，同值按股票代码排序。前 100 只合格股票构成风险观察池，其中前 6 只组成持仓名单。股票历史不足或窗口内成交额非正时排除；观察池不足 100 只或没有已生效成分时，跳过当天信号，不生成清仓单。接口失败和数据异常仍直接 panic。
+
+观察池各股票用 `FactorAdjusted` 收盘价计算 `close / MA15 - 1`，取中位数。初始为防御状态，严格超过 +0.5% 转进攻，严格低于 -0.5% 转防御，边界和中间区域保持原状态。每根日线成交量必须为有限正数，在校验时断言，不通过过滤零成交量来拼接窗口。
+
+首个信号日就回溯历史，新进入指数的股票也立即预热。历史不足时向前扩大查询区间，直到取得所需根数，或到达上市日与 `--history-start` 中较晚的日期；该参数默认 `20000101`，与当前 Tushare 历史 ST 数据起点一致。后续按股票只追加新增日期，滚动保存所需根数；成分离开后再次进入时补齐中间历史，不重复复权。日线与指数成分查询均不得超过信号日。
+
+调仓比较实际持仓与新名单：保留交集不动，第一批用 `SellAll` 清仓落选股票，第二批用 `BuyWeights` 买入新增股票。进攻状态平分第二批开始时全部可用现金的 95%；防御状态平分该现金的 `95% × defensive_fraction`（默认 23.75%），预算包含佣金。**这些比例是新增买入的现金预算，不是账户总仓位目标**。名单不变时不因趋势切换或持仓市值漂移交易，不提供 `rebalance_tolerance` 或 `TargetWeights`。
+
+卖出失败不阻止后续批次，但失败卖单不产生现金；买入失败的预算留在现金中，不重新分配。次日仍根据实际持仓重新判断，已买入少量的股票不会继续补仓。没有新增股票时不产生买入批次；回测末日信号不执行。
+
+策略参数：`--top-k`（6）、`--liquidity-lookback`（120）、`--trend-lookback`（15）、`--breadth-count`（100）、`--trend-band`（0.005）、`--defensive-fraction`（0.25）、`--minimum-listed-days`（120）、`--history-start`（20000101）。现金保留基准固定为 5%。Rust 可用 `LowTurnoverTrend::new(LowTurnoverTrendConfig::default())` 创建策略。
 
 ## Python
 
@@ -124,9 +144,11 @@ async fn on_trade_day(
 
 `ctx.date()` 是当前回测交易日；`ctx.position(symbol)` 提供单股持仓，`ctx.positions` 提供全部持仓，`ctx.cash` / `ctx.equity` 提供当日收盘后的现金和权益。`ctx.stock_bars(symbol, start, end).await` 查询闭区间，直接返回 `Vec<StockBar>`，包含原始 OHLC 和 `Adjustment::Raw(factor)`；无行情时返回空数组，日期、因子或数据无效时 panic。统一使用区间接口，不另设单日方法。策略可查询当前交易日及以前的日线，可以向回测开始日之前回溯；未来查询在发起网络请求前报错。
 
+`ctx.stock_info(symbol).await` 提供股票基础信息，上市日期可用于上市天数筛选；名称、行业为静态元数据，不代表回测当日历史状态。`ctx.index_comp(symbol, start, end).await` 提供指数成分历史，再通过 `composition(date)` 获取已生效成分，区间不能包含未来日期。
+
 `bar.adjusted()` 返回策略指标统一使用的单根 `StockBar`，OHLC 和涨跌停价按 `原始价格 × 当日因子` 独立换算，结果标记为 `Adjustment::FactorAdjusted`，不属于按窗口基准归一化的前复权或后复权。不修改输入，成交量、成交额、市值及其他非价格字段保持不变。输入须为带有效因子的原始日线，无效价格或因子直接 panic。每根日线只依赖自身价格和因子，分段转换可直接拼接；追加或移除日线不改变其他日线的结果。已复权输入会被拒绝，避免重复复权。指标价格不可直接用作订单限价，交易仍使用原始价格。
 
-`ctx.is_tradable(symbol, date).await` 查询当日或过去某日是否可供策略选入：有当日日线且 `st == false` 才返回 `true`；已查询区间内无日线返回 `false`。数据源通过 `DataProvider::is_tradable` 复用日线缓存，未覆盖日期先补拉，失败仍 panic。直接调用 `StockHistBar::is_tradable(date)` 时必须处于已覆盖闭区间，否则 panic。此方法只判断日线存在与 ST，不判断成交量、上市天数、涨跌停或订单最终能否成交。
+`ctx.is_tradable(symbol, date).await` 查询当日或过去某日是否可供策略选入：有当日日线且 `st == false` 才返回 `true`；已查询区间内无日线返回 `false`。数据源通过 `DataProvider::is_tradable` 复用日线缓存，未覆盖日期先补拉，失败仍 panic。直接调用 `StockHistBar::is_tradable(date)` 时必须处于已覆盖闭区间，否则 panic。此方法只判断日线存在与 ST，不额外筛选成交量、上市天数、涨跌停或订单最终能否成交；日线成交量在数据校验时已要求为有限正数。
 
 引擎逐日串行 `.await` 策略回调，上下文直接访问异步数据源和共享行情缓存，兼容 Tokio 单线程和多线程运行时。`BtContext` 通过异步锁访问数据源，历史查询仅需 `&self`。`run` 和 `run_with_data` 仍为异步方法。策略需要满足 `Send + 'static`，即持有自身数据；如需与调用方共享状态，可使用 `Arc<Mutex<_>>`。
 

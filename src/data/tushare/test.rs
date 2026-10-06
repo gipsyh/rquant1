@@ -683,83 +683,119 @@ async fn duplicate_dates_and_foreign_symbols_are_rejected() {
 }
 
 #[tokio::test]
-async fn requests_non_overlapping_year_chunks_without_truncating_history() {
+async fn requests_full_stock_history_without_year_chunks() {
     let server = MockServer::start().await;
-    for (start, end, day) in [
-        ("20231229", "20231231", "20231229"),
-        ("20240101", "20240102", "20240102"),
+    for (api, fields, items) in [
+        (
+            "daily",
+            json!([
+                "ts_code",
+                "trade_date",
+                "open",
+                "high",
+                "low",
+                "close",
+                "vol",
+                "amount"
+            ]),
+            json!([
+                ["000001.SZ", "20260928", 10, 11, 9, 10, 100, 100],
+                ["000001.SZ", "20230103", 10, 11, 9, 10, 100, 100]
+            ]),
+        ),
+        (
+            "adj_factor",
+            json!(["ts_code", "trade_date", "adj_factor"]),
+            json!([["000001.SZ", "20260928", 2], ["000001.SZ", "20230103", 1]]),
+        ),
+        (
+            "stk_limit",
+            json!(["ts_code", "trade_date", "up_limit", "down_limit"]),
+            json!([
+                ["000001.SZ", "20260928", 11, 9],
+                ["000001.SZ", "20230103", 11, 9]
+            ]),
+        ),
+        (
+            "stock_st",
+            json!(["ts_code", "trade_date"]),
+            json!([["000001.SZ", "20230103"]]),
+        ),
     ] {
-        for (api, fields, items) in [
-            (
-                "trade_cal",
-                json!(["cal_date", "is_open"]),
-                json!([[day, 1]]),
-            ),
-            (
-                "daily",
-                json!([
-                    "ts_code",
-                    "trade_date",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "vol",
-                    "amount"
-                ]),
-                json!([["000001.SZ", day, 10, 11, 9, 10, 100, 100]]),
-            ),
-            (
-                "adj_factor",
-                json!(["ts_code", "trade_date", "adj_factor"]),
-                json!([["000001.SZ", day, 2]]),
-            ),
-            (
-                "stk_limit",
-                json!(["ts_code", "trade_date", "up_limit", "down_limit"]),
-                json!([["000001.SZ", day, 11, 9]]),
-            ),
-            (
-                "stock_st",
-                json!(["ts_code", "trade_date"]),
-                if day == "20231229" {
-                    json!([["000001.SZ", day]])
-                } else {
-                    json!([])
-                },
-            ),
-        ] {
-            Mock::given(path(format!("/{api}")))
-                .and(body_partial_json(
-                    json!({"params": {"start_date": start, "end_date": end}}),
-                ))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "code": 0, "data": {"fields": fields, "items": items}
-                })))
-                .expect(1)
-                .mount(&server)
-                .await;
-        }
+        Mock::given(path(format!("/{api}")))
+            .and(body_partial_json(json!({"params": {
+                "ts_code": "000001.SZ", "start_date": "20230101", "end_date": "20260928"
+            }})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "data": {"fields": fields, "items": items}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
     }
-    let mut provider = provider(&server);
-    let trading_days = provider
-        .trading_days(
-            parse_date("20231229").unwrap(),
-            parse_date("20240102").unwrap(),
-        )
-        .await;
-    let bars = provider
+    let bars = provider(&server)
         .stock_bar(
             StockSymbol::from("000001"),
-            parse_date("20231229").unwrap(),
-            parse_date("20240102").unwrap(),
+            parse_date("20230101").unwrap(),
+            parse_date("20260928").unwrap(),
         )
         .await;
     assert_eq!(bars.len(), 2);
-    assert_eq!(trading_days.len(), 2);
+    assert_eq!(bars[0].date, parse_date("20230103").unwrap());
+    assert_eq!(bars[1].date, parse_date("20260928").unwrap());
     assert!(bars[0].st);
     assert!(!bars[1].st);
-    assert_eq!(server.received_requests().await.unwrap().len(), 10);
+    assert_eq!(server.received_requests().await.unwrap().len(), 4);
+}
+
+#[tokio::test]
+async fn row_limits_panic_at_boundary_without_retry_or_pagination() {
+    for (api, max_rows) in [
+        ("daily", 6000),
+        ("daily_basic", 6000),
+        ("stk_limit", 5800),
+        ("stock_basic", 6000),
+        ("stock_st", 1000),
+        ("suspend_d", 5000),
+        ("index_basic", 8000),
+        ("index_weight", 6000),
+    ] {
+        for row_count in [max_rows - 1, max_rows, max_rows + 1] {
+            let server = MockServer::start().await;
+            response(
+                &server,
+                api,
+                &["ts_code"],
+                Value::Array(vec![json!(["000001.SZ"]); row_count]),
+            )
+            .await;
+            // 保持重试开启，确认行数上限直接 panic 而不进入重试。
+            let provider = TushareProvider::new().with_base_url(server.uri());
+            let result = tokio::spawn(async move {
+                provider.query(api, params! {
+                    "ts_code" => "000001.SZ", "start_date" => "20230101", "end_date" => "20260928",
+                }, "ts_code").await.unwrap()
+            })
+            .await;
+            if row_count < max_rows {
+                assert_eq!(result.unwrap().len(), row_count);
+            } else {
+                let err = result.unwrap_err();
+                assert!(err.is_panic());
+                let message = err.to_string();
+                for expected in [
+                    api,
+                    "000001.SZ",
+                    "20230101",
+                    "20260928",
+                    &format!("{max_rows} 行上限"),
+                ] {
+                    assert!(message.contains(expected), "{message}");
+                }
+            }
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+    }
 }
 
 #[tokio::test]

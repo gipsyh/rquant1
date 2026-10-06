@@ -188,7 +188,7 @@ pub struct StockBar {
     pub low: f64,
     /// 收盘价，复权状态见 [`Self::adjustment`]
     pub close: f64,
-    /// 成交量，单位「股」（「手」 ×100）
+    /// 成交量，单位「股」（「手」 ×100）；有效日线必须为有限正数。
     pub volume: f64,
     /// 成交额，单位「元」，不参与复权
     pub turnover: f64,
@@ -286,6 +286,12 @@ impl StockHistBar {
                     pair[0].date < pair[1].date && pair[0].symbol == pair[1].symbol
                 }),
             "股票日线必须属于同一股票、日期严格升序且位于覆盖区间内"
+        );
+        assert!(
+            self.bars
+                .iter()
+                .all(|bar| bar.volume.is_finite() && bar.volume > 0.0),
+            "日线成交量必须为有限正数"
         );
         Ok(())
     }
