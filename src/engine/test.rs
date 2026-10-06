@@ -840,8 +840,6 @@ async fn context_rejects_future_queries_before_provider_access() {
     assert_eq!(rejected, [true, true], "未来数据查询应当 panic");
 }
 
-mod low_turnover_trend;
-
 #[test]
 fn volume_must_be_finite_and_strictly_positive() {
     use crate::{data::StockHistBar, utils::DateRange};
