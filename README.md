@@ -107,7 +107,7 @@ Python 便利函数目前接受单只目标股票，内部使用同一个多股�
 
 策略配置枚举和 `build()` 位于 `strategy/mod.rs`，`build()` 直接返回 `Box<dyn Strategy>`，`BuyAndHold::new(config)` 直接返回策略实例；配置无效时直接报错（panic）。具体策略的配置与实现放在一起；新增策略时添加对应 config 和枚举变体。`BacktestConfig` 也是引擎实际使用的配置，不再从 CLI 参数复制转换。默认值仅在 clap 属性中定义，Rust 的 `Default` 通过 clap 解析空参数生成配置，不读取进程命令行参数。Rust 的 `Default` 和 CLI 均使用 `20200101` 到 `utils::latest_rqdate()`，截止日期以北京时间 19:00 为分界。
 
-`DataProvider` 使用 `#[async_trait::async_trait]` 定义异步方法，实现时也需要添加该属性，支持 `dyn DataProvider` 动态分发。查询方法均使用 `&mut self`，允许数据源直接更新内部状态。提供 `trading_days(range)`、`stock_bar(symbol, range)` 和 `index_comp(symbol, range)`（`range: DateRange`，为日期闭区间），分别返回 `Vec<Date>`、`Vec<StockBar>` 和 `IndexHistComp`；请求失败或数据无效时直接 panic，空行情正常返回空数组。引擎启动时只取交易日历；策略查询历史、撮合订单和每日持仓估值时，才查询对应股票和日期。
+`DataProvider` 使用 `#[async_trait::async_trait]` 定义异步方法，实现时也需要添加该属性，支持 `dyn DataProvider` 动态分发。查询方法均使用 `&mut self`，允许数据源直接更新内部状态。提供 `trading_days(range)`、`stock_bar(symbol, range)` 和 `index_comp(symbol, range)`（`range: DateRange`，为日期闭区间），分别返回 `Vec<Date>`、`StockHistBar` 和 `IndexHistComp`；请求失败或数据无效时直接 panic，日线无行情时仍返回带请求区间的空历史。引擎启动时只取交易日历；策略查询历史、撮合订单和每日持仓估值时，才查询对应股票和日期。
 
 指数成分接口返回查询闭区间的历史，通过 `composition(date)` 取得当天已生效的最近一期 `Arc<IndexComp>`，再用 `weights()` 读取股票到权重比例的映射。例如：
 
@@ -119,7 +119,7 @@ for (stock, weight) in comp.weights() {
 }
 ```
 
-批量历史查询使用 `ctx.stocks_bars(&symbols, start, end).await`，返回 `BTreeMap<StockSymbol, Vec<StockBar>>`；重复代码合并，无行情股票保留空数组，返回原始价格，日期不得超过策略当日。`DataProvider::stocks_bars(&requests)` 的每项请求是 `(StockSymbol, DateRange)`，支持不同股票或缓存缺口使用不同区间，返回数组与请求逐项对应。数据源默认串行实现；Tushare 固定最多 4 个异步任务并发调用原有 `stock_bar`，不修改 HTTP API，也不拆分整段日线。任务共享连接池和已有 HTTP 并发限制；任一查询失败仍直接 panic。
+批量历史查询使用 `ctx.stocks_bars(&symbols, start, end).await`，返回 `BTreeMap<StockSymbol, Vec<StockBar>>`；重复代码合并，无行情股票保留空数组，返回原始价格，日期不得超过策略当日。`DataProvider::stocks_bars(&requests)` 的每项请求是 `(StockSymbol, DateRange)`，支持不同股票或缓存缺口使用不同区间，返回 `Vec<StockHistBar>`，每项与请求逐项对应，并保留完整请求区间（包括空行情区间）。数据源默认串行实现；Tushare 固定最多 4 个异步任务并发调用原有 `stock_bar`，不修改 HTTP API，也不拆分整段日线。任务共享连接池和已有 HTTP 并发限制；任一查询失败仍直接 panic。
 
 内存和磁盘缓存均透传批量查询：合并同一股票的请求，仅把未覆盖区间交给底层，首次访问仍预取整个回测区间。基础信息通过 `stocks_info` 批量查询和缓存：Tushare 将去重后的代码以逗号连接，一次请求 `stock_basic`；先查 `L`，只将仍缺失的代码继续按 `D`、`P` 顺序请求，不再逐股并发查询。返回顺序与输入一致，`stock_info` 复用单元素的 `stocks_info`；空输入不发请求，缺失、重复或非请求代码仍报错。地量趋势策略已使用批量基础信息和日线查询进行首次预热及后续追加；历史根数不足时，保留原有按股票向前补拉逻辑。
 

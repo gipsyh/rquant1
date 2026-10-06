@@ -37,7 +37,7 @@ impl DataProvider for IndexProvider {
         unreachable!()
     }
 
-    async fn stock_bar(&mut self, _symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+    async fn stock_bar(&mut self, _symbol: StockSymbol, range: DateRange) -> StockHistBar {
         let (_start, _end) = (range.start(), range.end());
         unreachable!()
     }

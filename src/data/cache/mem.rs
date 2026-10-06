@@ -1,7 +1,5 @@
 use crate::data::index::normalize_index_symbol;
-use crate::data::{
-    DataProvider, Index, IndexHistComp, RqData, Stock, StockBar, StockHistBar, StockSymbol,
-};
+use crate::data::{DataProvider, Index, IndexHistComp, RqData, Stock, StockHistBar, StockSymbol};
 use crate::utils::DateRange;
 use std::collections::{BTreeMap, BTreeSet};
 use time::Date;
@@ -45,17 +43,16 @@ impl MemCacheProvider {
     }
 
     async fn download(&mut self, symbol: StockSymbol, start: Date, end: Date) -> StockHistBar {
-        let mut bars = self
-            .provider
-            .stock_bar(symbol, DateRange::new(start, end))
-            .await;
-        bars.sort_unstable_by_key(|bar| bar.date);
+        let range = DateRange::new(start, end);
+        let hist = self.provider.stock_bar(symbol, range).await;
+        assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
+        hist.validate()
+            .unwrap_or_else(|err| panic!("行情数据无效: {symbol}: {err:#}"));
         assert!(
-            bars.iter().all(|bar| bar.symbol == symbol),
+            hist.bars().iter().all(|bar| bar.symbol == symbol),
             "行情股票不匹配: {symbol}"
         );
-        StockHistBar::new(DateRange::new(start, end), bars)
-            .unwrap_or_else(|err| panic!("行情数据无效: {symbol}: {err:#}"))
+        hist
     }
 }
 
@@ -78,7 +75,7 @@ impl DataProvider for MemCacheProvider {
         self.data.stock[&symbol].info()
     }
 
-    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> StockHistBar {
         let (start, end) = (range.start(), range.end());
         if let Some(range) = self
             .data
@@ -126,7 +123,6 @@ impl DataProvider for MemCacheProvider {
             .unwrap()
             .slice(start, end)
             .unwrap()
-            .bars
     }
 
     async fn stocks_info(&mut self, symbols: &[StockSymbol]) -> Vec<Stock> {
@@ -150,7 +146,7 @@ impl DataProvider for MemCacheProvider {
         symbols.iter().map(|s| self.data.stock[s].info()).collect()
     }
 
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         // 同一股票的重复/重叠请求先合并，避免并发下载相同区间。
         let mut ranges: BTreeMap<StockSymbol, DateRange> = BTreeMap::new();
         for &(symbol, range) in requests {
@@ -190,13 +186,13 @@ impl DataProvider for MemCacheProvider {
         if !missing.is_empty() {
             let results = self.provider.stocks_bars(&missing).await;
             assert_eq!(results.len(), missing.len(), "日线批量结果数量不匹配");
-            for ((symbol, range), mut bars) in missing.into_iter().zip(results) {
+            for ((symbol, range), hist) in missing.into_iter().zip(results) {
+                assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
+                hist.validate().unwrap();
                 assert!(
-                    bars.iter().all(|b| b.symbol == symbol),
+                    hist.bars().iter().all(|bar| bar.symbol == symbol),
                     "行情股票不匹配: {symbol}"
                 );
-                bars.sort_unstable_by_key(|bar| bar.date);
-                let hist = StockHistBar::new(range, bars).unwrap();
                 let cached = &mut self.data.stock.get_mut(&symbol).unwrap().bars;
                 if let Some(cached) = cached {
                     cached.extend(hist);
@@ -215,7 +211,6 @@ impl DataProvider for MemCacheProvider {
                     .unwrap()
                     .slice(start, end)
                     .unwrap()
-                    .bars
             })
             .collect()
     }

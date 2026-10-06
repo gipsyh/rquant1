@@ -655,7 +655,8 @@ async fn missing_factor_fails_instead_of_silently_switching_to_raw_returns() {
                 parse_date("20240104").unwrap(),
             ),
         )
-        .await;
+        .await
+        .into_bars();
 }
 
 #[tokio::test]
@@ -676,7 +677,8 @@ async fn duplicate_dates_and_foreign_symbols_are_rejected() {
                         parse_date("20240104").unwrap(),
                     ),
                 )
-                .await;
+                .await
+                .into_bars();
         })
         .await
         .expect_err("无效行情必须终止查询");
@@ -745,7 +747,8 @@ async fn requests_full_stock_history_without_year_chunks() {
                 parse_date("20260928").unwrap(),
             ),
         )
-        .await;
+        .await
+        .into_bars();
     assert_eq!(bars.len(), 2);
     assert_eq!(bars[0].date, parse_date("20230103").unwrap());
     assert_eq!(bars[1].date, parse_date("20260928").unwrap());
@@ -808,16 +811,15 @@ async fn row_limits_panic_at_boundary_without_retry_or_pagination() {
 async fn empty_daily_query_returns_no_bars() {
     let server = MockServer::start().await;
     response(&server, "daily", &[], json!([])).await;
-    let bars = provider(&server)
-        .stock_bar(
-            StockSymbol::from("000001"),
-            DateRange::new(
-                parse_date("20240101").unwrap(),
-                parse_date("20240104").unwrap(),
-            ),
-        )
+    let range = DateRange::new(
+        parse_date("20240101").unwrap(),
+        parse_date("20240104").unwrap(),
+    );
+    let hist = provider(&server)
+        .stock_bar(StockSymbol::from("000001"), range)
         .await;
-    assert!(bars.is_empty());
+    assert_eq!(hist.range(), range);
+    assert!(hist.bars().is_empty());
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
@@ -840,7 +842,8 @@ async fn upstream_permission_error_propagates_to_caller() {
                 parse_date("20240104").unwrap(),
             ),
         )
-        .await;
+        .await
+        .into_bars();
 }
 
 #[tokio::test]
@@ -949,7 +952,8 @@ async fn st_status_is_joined_by_date_without_carrying_it_forward() {
                 parse_date("20240104").unwrap(),
             ),
         )
-        .await;
+        .await
+        .into_bars();
     assert_eq!(
         bars.iter()
             .map(|bar| (bar.date, bar.st))
@@ -999,7 +1003,8 @@ async fn invalid_st_rows_are_rejected() {
                         parse_date("20240104").unwrap(),
                     ),
                 )
-                .await;
+                .await
+                .into_bars();
         })
         .await
         .expect_err("不能把非法 ST 数据当作非 ST");
@@ -1032,7 +1037,8 @@ async fn st_permission_failure_is_not_treated_as_non_st() {
                 parse_date("20240104").unwrap(),
             ),
         )
-        .await;
+        .await
+        .into_bars();
 }
 
 #[tokio::test]
@@ -1047,7 +1053,8 @@ async fn dates_before_st_coverage_are_rejected() {
                 parse_date("20000104").unwrap(),
             ),
         )
-        .await;
+        .await
+        .into_bars();
 }
 
 #[tokio::test]
@@ -1248,11 +1255,19 @@ async fn stocks_bars_preserves_request_order_and_empty_results() {
     let mut provider = provider(&server);
     let results = provider.stocks_bars(&requests).await;
     assert_eq!(results.len(), 3);
-    assert!(results[1].is_empty());
+    assert!(results[1].bars().is_empty());
+    assert!(
+        results
+            .iter()
+            .all(|hist| hist.range() == DateRange::new(day, day))
+    );
     for (i, &symbol) in symbols.iter().enumerate() {
         assert_eq!(
-            results[i],
-            provider.stock_bar(symbol, DateRange::new(day, day)).await
+            results[i].bars(),
+            provider
+                .stock_bar(symbol, DateRange::new(day, day))
+                .await
+                .into_bars()
         );
     }
     assert!(provider.stocks_bars(&[]).await.is_empty());

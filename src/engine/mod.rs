@@ -174,21 +174,18 @@ impl BtContext<'_> {
         symbols
             .into_iter()
             .zip(results)
-            .map(|(symbol, bars)| {
-                let mut previous = None;
-                for bar in &bars {
-                    assert!(
-                        bar.symbol == symbol && bar.date >= start && bar.date <= end,
-                        "批量日线返回请求范围外数据"
-                    );
-                    assert!(
-                        previous.is_none_or(|date| date < bar.date),
-                        "批量日线日期未严格升序"
-                    );
+            .map(|(symbol, hist)| {
+                assert_eq!(
+                    hist.range(),
+                    DateRange::new(start, end),
+                    "日线历史覆盖区间不匹配"
+                );
+                hist.validate().unwrap();
+                for bar in hist.bars() {
+                    assert_eq!(bar.symbol, symbol, "批量日线返回非请求股票");
                     rbt::validate_bar(bar, true).unwrap();
-                    previous = Some(bar.date);
                 }
-                (symbol, bars)
+                (symbol, hist.into_bars())
             })
             .collect()
     }

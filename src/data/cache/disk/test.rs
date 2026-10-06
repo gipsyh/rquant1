@@ -1,5 +1,5 @@
 use super::*;
-use crate::data::{Adjustment, Stock, StockHistBar};
+use crate::data::{Adjustment, Stock, StockBar, StockHistBar};
 use crate::utils::DateRange;
 use std::sync::{Arc, Mutex};
 use time::macros::date;
@@ -122,7 +122,7 @@ impl DataProvider for Provider {
         vec![start]
     }
 
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         self.batch_sizes.lock().unwrap().push(requests.len());
         let mut results = Vec::new();
         for &(symbol, range) in requests {
@@ -131,14 +131,17 @@ impl DataProvider for Provider {
         results
     }
 
-    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> StockHistBar {
         let (start, end) = (range.start(), range.end());
         self.requests.lock().unwrap().push((symbol, start, end));
-        self.bars
+        let mut bars: Vec<_> = self
+            .bars
             .iter()
             .filter(|bar| bar.symbol == symbol && bar.date >= start && bar.date <= end)
             .copied()
-            .collect()
+            .collect();
+        bars.sort_unstable_by_key(|bar| bar.date);
+        StockHistBar::new(range, bars).unwrap()
     }
 }
 
@@ -203,7 +206,10 @@ async fn drop保存并在重建后命中日线缓存() {
         assert!(requests.lock().unwrap().is_empty());
         // 首次只查询一天，也预取构造时的整个范围。
         assert_eq!(
-            cache.stock_bar(symbol, DateRange::new(start, start)).await,
+            cache
+                .stock_bar(symbol, DateRange::new(start, start))
+                .await
+                .into_bars(),
             bars[..1]
         );
         assert_eq!(*requests.lock().unwrap(), vec![(symbol, start, end)]);
@@ -217,7 +223,10 @@ async fn drop保存并在重建后命中日线缓存() {
             DiskCacheProvider::with_path(provider(vec![], &requests), start, end, path.clone())
                 .unwrap();
         assert_eq!(
-            cache.stock_bar(symbol, DateRange::new(start, end)).await,
+            cache
+                .stock_bar(symbol, DateRange::new(start, end))
+                .await
+                .into_bars(),
             bars
         );
         let stock = &cache.inner.data.stock[&symbol];
@@ -266,6 +275,7 @@ async fn 空区间跨实例保留且只补拉两端和新股票() {
             cache
                 .stock_bar(symbol, DateRange::new(start, end))
                 .await
+                .into_bars()
                 .is_empty()
         );
     }
@@ -278,6 +288,7 @@ async fn 空区间跨实例保留且只补拉两端和新股票() {
             cache
                 .stock_bar(symbol, DateRange::new(start, end))
                 .await
+                .into_bars()
                 .is_empty()
         );
         assert!(requests.lock().unwrap().is_empty());
@@ -287,18 +298,21 @@ async fn 空区间跨实例保留且只补拉两端和新股票() {
             cache
                 .stock_bar(symbol, DateRange::new(earlier, later))
                 .await
+                .into_bars()
                 .is_empty()
         );
         assert!(
             cache
                 .stock_bar(symbol, DateRange::new(earlier, later))
                 .await
+                .into_bars()
                 .is_empty()
         );
         assert!(
             cache
                 .stock_bar(other, DateRange::new(start, end))
                 .await
+                .into_bars()
                 .is_empty()
         );
         assert_eq!(
@@ -320,12 +334,14 @@ async fn 空区间跨实例保留且只补拉两端和新股票() {
                 DateRange::new(date!(2024 - 01 - 01), date!(2024 - 01 - 06))
             )
             .await
+            .into_bars()
             .is_empty()
     );
     assert!(
         cache
             .stock_bar(other, DateRange::new(start, end))
             .await
+            .into_bars()
             .is_empty()
     );
     assert!(requests.lock().unwrap().is_empty());
@@ -395,15 +411,22 @@ async fn 两端补拉后所有日线有序且完整保存() {
         assert_eq!(
             cache
                 .stock_bar(symbol, DateRange::new(middle, middle))
-                .await,
+                .await
+                .into_bars(),
             bars[2..3]
         );
         assert_eq!(
-            cache.stock_bar(symbol, DateRange::new(first, last)).await,
+            cache
+                .stock_bar(symbol, DateRange::new(first, last))
+                .await
+                .into_bars(),
             bars
         );
         assert_eq!(
-            cache.stock_bar(symbol, DateRange::new(middle, last)).await,
+            cache
+                .stock_bar(symbol, DateRange::new(middle, last))
+                .await
+                .into_bars(),
             bars[2..]
         );
         assert_eq!(
@@ -426,7 +449,10 @@ async fn 两端补拉后所有日线有序且完整保存() {
     let mut cache =
         DiskCacheProvider::with_path(provider(vec![], &requests), first, last, path).unwrap();
     assert_eq!(
-        cache.stock_bar(symbol, DateRange::new(first, last)).await,
+        cache
+            .stock_bar(symbol, DateRange::new(first, last))
+            .await
+            .into_bars(),
         bars
     );
     assert!(requests.lock().unwrap().is_empty());
@@ -547,12 +573,16 @@ async fn metadata_only_stock_persists_without_claiming_bar_coverage() {
         cache
             .stock_bar(symbol, DateRange::new(start, start))
             .await
+            .into_bars()
             .is_empty()
     );
     let hist = cache.inner.data.stock[&symbol].bars.as_ref().unwrap();
     assert_eq!(hist.range(), DateRange::new(start, start));
     assert!(hist.bars().is_empty());
-    cache.stock_bar(symbol, DateRange::new(start, start)).await;
+    cache
+        .stock_bar(symbol, DateRange::new(start, start))
+        .await
+        .into_bars();
     assert_eq!(*requests.lock().unwrap(), vec![(symbol, start, start)]);
 }
 
@@ -634,7 +664,11 @@ async fn batch_cache_deduplicates_extends_and_persists_empty_history() {
     ];
     assert_eq!(
         cache.stocks_bars(&query).await,
-        vec![vec![bar(a, middle)], vec![], vec![bar(a, middle)]]
+        vec![
+            StockHistBar::new(DateRange::new(middle, middle), vec![bar(a, middle)]).unwrap(),
+            StockHistBar::new(DateRange::new(middle, middle), vec![]).unwrap(),
+            StockHistBar::new(DateRange::new(middle, last), vec![bar(a, middle)]).unwrap(),
+        ]
     );
     assert_eq!(*batch_sizes.lock().unwrap(), vec![2]);
     assert_eq!(
@@ -666,7 +700,11 @@ async fn batch_cache_deduplicates_extends_and_persists_empty_history() {
         DiskCacheProvider::with_path(provider(vec![], &requests), first, after, path).unwrap();
     assert_eq!(
         cache.stocks_bars(&query).await,
-        vec![vec![bar(a, middle)], vec![], vec![bar(a, middle)]]
+        vec![
+            StockHistBar::new(DateRange::new(middle, middle), vec![bar(a, middle)]).unwrap(),
+            StockHistBar::new(DateRange::new(middle, middle), vec![]).unwrap(),
+            StockHistBar::new(DateRange::new(middle, last), vec![bar(a, middle)]).unwrap(),
+        ]
     );
     assert!(requests.lock().unwrap().is_empty());
 }

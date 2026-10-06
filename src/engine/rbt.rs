@@ -144,11 +144,15 @@ pub(super) async fn load_bars(
     end: time::Date,
     adjusted: bool,
 ) -> Vec<StockBar> {
-    let bars = provider.stock_bar(symbol, DateRange::new(start, end)).await;
-    for bar in &bars {
+    let range = DateRange::new(start, end);
+    let hist = provider.stock_bar(symbol, range).await;
+    assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
+    hist.validate().unwrap();
+    for bar in hist.bars() {
+        assert_eq!(bar.symbol, symbol, "行情股票不匹配");
         validate_bar(bar, adjusted).unwrap();
     }
-    bars
+    hist.into_bars()
 }
 
 fn factor(bar: &StockBar, adjusted: bool) -> f64 {

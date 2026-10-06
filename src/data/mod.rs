@@ -267,6 +267,11 @@ impl StockHistBar {
         &self.bars
     }
 
+    /// 消费历史对象，取出日线数组而不复制。
+    pub fn into_bars(self) -> Vec<StockBar> {
+        self.bars
+    }
+
     /// 已覆盖日期有日线且非 ST 才可交易；无日线返回 false，区间外查询 panic。
     /// 仅用于策略筛选，不判断成交量、涨跌停或订单能否成交。
     pub fn is_tradable(&self, date: Date) -> bool {
@@ -355,12 +360,13 @@ pub trait DataProvider: Send + Sync {
         results
     }
 
-    /// 股票日线，返回时按时间排序
-    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar>;
+    /// 股票日线历史，覆盖区间等于请求区间；日线按日期严格升序，空行情保留区间。
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> StockHistBar;
 
     /// 批量日线请求，每项为（股票、日期闭区间）。
-    /// 返回数组与请求逐项对应，空行情保留空 Vec；默认串行，数据源可覆盖为并发。
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+    /// 返回历史与请求逐项对应，覆盖区间等于请求区间，空行情也保留覆盖区间。
+    /// 默认串行，数据源可覆盖为并发。
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         let mut results = Vec::with_capacity(requests.len());
         for &(symbol, range) in requests {
             results.push(self.stock_bar(symbol, range).await);
@@ -371,14 +377,15 @@ pub trait DataProvider: Send + Sync {
     /// 查询指定日期是否有日线且非 ST；通过日线查询复用缓存及区间补拉。
     /// 查询失败或返回数据范围、股票代码无效时 panic，不将失败视为无行情。
     async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool {
-        let bars = self.stock_bar(symbol, DateRange::new(date, date)).await;
+        let range = DateRange::new(date, date);
+        let hist = self.stock_bar(symbol, range).await;
+        assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
+        hist.validate().unwrap();
         assert!(
-            bars.iter().all(|bar| bar.symbol == symbol),
+            hist.bars().iter().all(|bar| bar.symbol == symbol),
             "行情股票不匹配: {symbol}"
         );
-        StockHistBar::new(DateRange::new(date, date), bars)
-            .unwrap()
-            .is_tradable(date)
+        hist.is_tradable(date)
     }
 
     /// 查询指数名称，必须非空；查询失败或指数不存在时 panic。

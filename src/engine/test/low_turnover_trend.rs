@@ -1,5 +1,5 @@
 use super::*;
-use crate::data::{IndexComp, IndexHistComp, Stock};
+use crate::data::{IndexComp, IndexHistComp, Stock, StockHistBar};
 use crate::strategy::{LowTurnoverTrend, LowTurnoverTrendConfig, StrategyConfig};
 use crate::utils::DateRange;
 use clap::Parser;
@@ -70,7 +70,7 @@ impl DataProvider for Source {
             bars: None,
         }
     }
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         self.batch_sizes.push(requests.len());
         let mut results = Vec::new();
         for &(symbol, range) in requests {
@@ -79,14 +79,16 @@ impl DataProvider for Source {
         results
     }
 
-    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> StockHistBar {
         let (start, end) = (range.start(), range.end());
         self.queries.lock().unwrap().push((symbol, start, end));
-        self.bars
+        let bars = self
+            .bars
             .iter()
             .filter(|bar| bar.symbol == symbol && start <= bar.date && bar.date <= end)
             .copied()
-            .collect()
+            .collect();
+        StockHistBar::new(range, bars).unwrap()
     }
     async fn index_name(&mut self, _: &str) -> String {
         "测试指数".into()

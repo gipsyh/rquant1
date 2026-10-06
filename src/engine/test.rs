@@ -1,6 +1,6 @@
 use super::execution::Account;
 use super::*;
-use crate::data::{Adjustment, IndexHistComp};
+use crate::data::{Adjustment, IndexHistComp, StockHistBar};
 use crate::strategy::Strategy;
 use std::sync::{Arc, Mutex};
 use time::macros::date;
@@ -66,12 +66,14 @@ impl DataProvider for Provider {
         let (_start, _end) = (range.start(), range.end());
         vec![FIRST, NEXT, LAST]
     }
-    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
-        self.bars
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> StockHistBar {
+        let bars = self
+            .bars
             .iter()
             .filter(|bar| bar.symbol == symbol && range.contains(bar.date))
             .copied()
-            .collect()
+            .collect();
+        StockHistBar::new(range, bars).unwrap()
     }
     async fn index_name(&mut self, _: &str) -> String {
         unreachable!()
@@ -210,7 +212,8 @@ async fn limit_orders_compare_only_open_and_fill_at_open_including_equality() {
         bar.high = f64::NAN;
         bar.low = f64::NAN;
         bar.close = f64::NAN;
-        bar.volume = 0.0;
+        // 历史日线要求成交量为正；仅 1 股仍不限制开盘撮合的成交股数。
+        bar.volume = 1.0;
     }
     let mut probe = Probe::default();
     let result = engine(10000.0)

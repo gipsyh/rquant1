@@ -182,6 +182,7 @@ impl BacktestEngine {
                 let bar = provider
                     .stock_bar(leg.symbol, DateRange::new(date, date))
                     .await
+                    .into_bars()
                     .into_iter()
                     .next();
                 entry.insert(bar);
@@ -197,6 +198,7 @@ impl BacktestEngine {
                         provider
                             .stock_bar(leg.symbol, DateRange::new(signal_date, signal_date))
                             .await
+                            .into_bars()
                             .into_iter()
                             .next(),
                     );

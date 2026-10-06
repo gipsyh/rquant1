@@ -1,7 +1,9 @@
 //! Tushare 数据源：HTTP 接口调用、重试与日线数据组装。
 
 use super::table::Table;
-use crate::data::{Adjustment, DataProvider, IndexHistComp, Stock, StockBar, StockSymbol};
+use crate::data::{
+    Adjustment, DataProvider, IndexHistComp, Stock, StockBar, StockHistBar, StockSymbol,
+};
 use crate::utils::{DateRange, parse_date};
 use anyhow::{Context, Result, anyhow};
 use futures_util::{StreamExt, stream};
@@ -573,7 +575,7 @@ impl DataProvider for TushareProvider {
         calendar.into_keys().collect()
     }
 
-    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> StockHistBar {
         let (start, end) = (range.start(), range.end());
         assert!(
             start >= time::macros::date!(2000 - 01 - 01),
@@ -675,10 +677,10 @@ impl DataProvider for TushareProvider {
                 );
             }
         }
-        bars.into_values().collect()
+        StockHistBar::new(range, bars.into_values().collect()).unwrap()
     }
 
-    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
         // 每项复用完整的单股票处理流程；共享 HTTP 连接池和请求信号量。
         // buffered 保持输入顺序，最多同时处理 4 项，失败沿用 stock_bar 的 panic。
         stream::iter(requests.iter().copied().map(|(symbol, range)| {
