@@ -60,6 +60,12 @@ impl Source {
 
 #[async_trait::async_trait]
 impl DataProvider for Source {
+    async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool {
+        self.bars
+            .iter()
+            .any(|bar| bar.symbol == symbol && bar.date == date && !bar.st)
+    }
+
     async fn stock_info(&mut self, symbol: StockSymbol) -> Stock {
         Stock {
             symbol,

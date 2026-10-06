@@ -97,6 +97,10 @@ struct Provider {
 
 #[async_trait::async_trait]
 impl DataProvider for Provider {
+    async fn is_tradable(&mut self, _symbol: StockSymbol, _date: Date) -> bool {
+        unreachable!("可交易判断应由缓存层完成")
+    }
+
     async fn stock_info(&mut self, symbol: StockSymbol) -> crate::data::Stock {
         crate::data::Stock {
             symbol,
@@ -621,9 +625,18 @@ async fn tradability_uses_historical_st_and_extends_and_reloads_cached_coverage(
         assert!(!cache.is_tradable(symbol, st_day).await);
         // 原覆盖区间之外先补拉，不直接判为不可交易。
         assert!(cache.is_tradable(symbol, recovered).await);
+        // 向前补拉无行情日期后也要记录覆盖范围，重复查询不下载。
+        let earlier = first.previous_day().unwrap();
+        assert!(!cache.is_tradable(symbol, earlier).await);
+        assert!(!cache.is_tradable(symbol, earlier).await);
+        assert!(!cache.is_tradable(symbol, missing).await);
         assert_eq!(
             *requests.lock().unwrap(),
-            vec![(symbol, first, st_day), (symbol, recovered, recovered)]
+            vec![
+                (symbol, first, st_day),
+                (symbol, recovered, recovered),
+                (symbol, earlier, earlier)
+            ]
         );
     }
     requests.lock().unwrap().clear();
@@ -632,6 +645,11 @@ async fn tradability_uses_historical_st_and_extends_and_reloads_cached_coverage(
     assert!(!cache.is_tradable(symbol, missing).await);
     assert!(!cache.is_tradable(symbol, st_day).await);
     assert!(cache.is_tradable(symbol, recovered).await);
+    assert!(
+        !cache
+            .is_tradable(symbol, first.previous_day().unwrap())
+            .await
+    );
     assert!(requests.lock().unwrap().is_empty());
 }
 

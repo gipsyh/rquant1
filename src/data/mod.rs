@@ -374,19 +374,8 @@ pub trait DataProvider: Send + Sync {
         results
     }
 
-    /// 查询指定日期是否有日线且非 ST；通过日线查询复用缓存及区间补拉。
-    /// 查询失败或返回数据范围、股票代码无效时 panic，不将失败视为无行情。
-    async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool {
-        let range = DateRange::new(date, date);
-        let hist = self.stock_bar(symbol, range).await;
-        assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
-        hist.validate().unwrap();
-        assert!(
-            hist.bars().iter().all(|bar| bar.symbol == symbol),
-            "行情股票不匹配: {symbol}"
-        );
-        hist.is_tradable(date)
-    }
+    /// 查询指定日期是否有日线且非 ST
+    async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool;
 
     /// 查询指数名称，必须非空；查询失败或指数不存在时 panic。
     async fn index_name(&mut self, symbol: &str) -> String;

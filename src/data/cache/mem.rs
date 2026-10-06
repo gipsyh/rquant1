@@ -58,6 +58,24 @@ impl MemCacheProvider {
 
 #[async_trait::async_trait]
 impl DataProvider for MemCacheProvider {
+    async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool {
+        let covered = self
+            .data
+            .stock
+            .get(&symbol)
+            .and_then(|stock| stock.bars.as_ref())
+            .is_some_and(|hist| hist.range().contains(date));
+        if !covered {
+            // 复用首次预取和两端补拉；已覆盖但没有 bar 的日期不重复下载。
+            self.stock_bar(symbol, DateRange::new(date, date)).await;
+        }
+        self.data.stock[&symbol]
+            .bars
+            .as_ref()
+            .unwrap()
+            .is_tradable(date)
+    }
+
     async fn trading_days(&mut self, range: DateRange) -> Vec<Date> {
         self.provider.trading_days(range).await
     }

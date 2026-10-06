@@ -126,6 +126,10 @@ impl DataProvider for DiskCacheProvider {
         self.inner.stocks_bar(requests).await
     }
 
+    async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool {
+        self.inner.is_tradable(symbol, date).await
+    }
+
     async fn index_name(&mut self, symbol: &str) -> String {
         self.inner.index_name(symbol).await
     }

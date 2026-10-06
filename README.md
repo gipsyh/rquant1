@@ -152,7 +152,7 @@ async fn on_trade_day(
 
 `bar.adjusted()` 返回策略指标统一使用的单根 `StockBar`，OHLC 和涨跌停价按 `原始价格 × 当日因子` 独立换算，结果标记为 `Adjustment::FactorAdjusted`，不属于按窗口基准归一化的前复权或后复权。不修改输入，成交量、成交额、市值及其他非价格字段保持不变。输入须为带有效因子的原始日线，无效价格或因子直接 panic。每根日线只依赖自身价格和因子，分段转换可直接拼接；追加或移除日线不改变其他日线的结果。已复权输入会被拒绝，避免重复复权。指标价格不可直接用作订单限价，交易仍使用原始价格。
 
-`ctx.is_tradable(symbol, date).await` 查询当日或过去某日是否可供策略选入：有当日日线且 `st == false` 才返回 `true`；已查询区间内无日线返回 `false`。数据源通过 `DataProvider::is_tradable` 复用日线缓存，未覆盖日期先补拉，失败仍 panic。直接调用 `StockHistBar::is_tradable(date)` 时必须处于已覆盖闭区间，否则 panic。此方法只判断日线存在与 ST，不额外筛选成交量、上市天数、涨跌停或订单最终能否成交；日线成交量在数据校验时已要求为有限正数。
+`ctx.is_tradable(symbol, date).await` 查询当日或过去某日是否可供策略选入：有当日日线且 `st == false` 才返回 `true`；已查询区间内无日线返回 `false`。`DataProvider::is_tradable` 没有默认实现；生产环境由 `MemCacheProvider` 判断，`DiskCacheProvider` 转发给内存缓存。日期不在覆盖区间时先延长日线覆盖区间，再判断是否有 bar 且非 ST；已覆盖但无 bar 的日期不重复下载，补拉失败仍 panic。原始 `TushareProvider` 不直接提供此判断，需包装缓存后使用。直接调用 `StockHistBar::is_tradable(date)` 时必须处于已覆盖闭区间，否则 panic。此方法只判断日线存在与 ST，不额外筛选成交量、上市天数、涨跌停或订单最终能否成交；日线成交量在数据校验时已要求为有限正数。
 
 引擎逐日串行 `.await` 策略回调，上下文直接访问异步数据源和共享行情缓存，兼容 Tokio 单线程和多线程运行时。`BtContext` 通过异步锁访问数据源，历史查询仅需 `&self`。`run` 和 `run_with_data` 仍为异步方法。策略需要满足 `Send + 'static`，即持有自身数据；如需与调用方共享状态，可使用 `Arc<Mutex<_>>`。
 

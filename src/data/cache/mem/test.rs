@@ -14,6 +14,10 @@ pub(crate) struct IndexProvider {
 
 #[async_trait::async_trait]
 impl DataProvider for IndexProvider {
+    async fn is_tradable(&mut self, _symbol: StockSymbol, _date: Date) -> bool {
+        unreachable!("可交易判断应由缓存层完成")
+    }
+
     async fn stock_info(&mut self, _: StockSymbol) -> crate::data::Stock {
         unreachable!()
     }

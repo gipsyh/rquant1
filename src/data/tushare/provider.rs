@@ -520,6 +520,10 @@ impl TushareProvider {
 
 #[async_trait::async_trait]
 impl DataProvider for TushareProvider {
+    async fn is_tradable(&mut self, _symbol: StockSymbol, _date: Date) -> bool {
+        unimplemented!("可交易判断请通过 MemCacheProvider 或 DiskCacheProvider 查询")
+    }
+
     async fn stocks_info(&mut self, symbols: &[StockSymbol]) -> Vec<Stock> {
         self.fetch_stocks_info(symbols)
             .await

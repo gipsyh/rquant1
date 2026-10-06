@@ -51,6 +51,12 @@ impl Default for Provider {
 }
 #[async_trait::async_trait]
 impl DataProvider for Provider {
+    async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool {
+        self.bars
+            .iter()
+            .any(|bar| bar.symbol == symbol && bar.date == date && !bar.st)
+    }
+
     async fn stock_info(&mut self, symbol: StockSymbol) -> crate::data::Stock {
         crate::data::Stock {
             symbol,
