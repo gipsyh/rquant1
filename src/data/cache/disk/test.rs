@@ -478,3 +478,55 @@ async fn metadata_only_stock_persists_without_claiming_bar_coverage() {
     cache.stock_bar(symbol, start, start).await;
     assert_eq!(*requests.lock().unwrap(), vec![(symbol, start, start)]);
 }
+
+#[tokio::test]
+async fn tradability_uses_historical_st_and_extends_and_reloads_cached_coverage() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(DiskCacheProvider::FILE_NAME);
+    let symbol = StockSymbol::from("000001");
+    let first = date!(2024 - 01 - 02);
+    let missing = date!(2024 - 01 - 03);
+    let st_day = date!(2024 - 01 - 04);
+    let recovered = date!(2024 - 01 - 05);
+    let bars = vec![
+        StockBar {
+            volume: 0.0,
+            ..bar(symbol, first)
+        },
+        StockBar {
+            st: true,
+            ..bar(symbol, st_day)
+        },
+        bar(symbol, recovered),
+    ];
+    let hist = StockHistBar::new(DateRange::new(first, recovered), bars.clone()).unwrap();
+    assert!(hist.is_tradable(first));
+    assert!(!hist.is_tradable(missing));
+    assert!(!hist.is_tradable(st_day));
+    assert!(hist.is_tradable(recovered));
+    for outside in [first.previous_day().unwrap(), recovered.next_day().unwrap()] {
+        assert!(std::panic::catch_unwind(|| hist.is_tradable(outside)).is_err());
+    }
+    let requests = Requests::default();
+    {
+        let mut cache =
+            DiskCacheProvider::with_path(provider(bars, &requests), first, st_day, path.clone())
+                .unwrap();
+        assert!(cache.is_tradable(symbol, first).await);
+        assert!(!cache.is_tradable(symbol, missing).await);
+        assert!(!cache.is_tradable(symbol, st_day).await);
+        // 原覆盖区间之外先补拉，不直接判为不可交易。
+        assert!(cache.is_tradable(symbol, recovered).await);
+        assert_eq!(
+            *requests.lock().unwrap(),
+            vec![(symbol, first, st_day), (symbol, recovered, recovered)]
+        );
+    }
+    requests.lock().unwrap().clear();
+    let mut cache =
+        DiskCacheProvider::with_path(provider(vec![], &requests), first, recovered, path).unwrap();
+    assert!(!cache.is_tradable(symbol, missing).await);
+    assert!(!cache.is_tradable(symbol, st_day).await);
+    assert!(cache.is_tradable(symbol, recovered).await);
+    assert!(requests.lock().unwrap().is_empty());
+}

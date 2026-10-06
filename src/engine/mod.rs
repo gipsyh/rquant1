@@ -101,6 +101,12 @@ impl BtContext<'_> {
         self.positions.get(&symbol)
     }
 
+    /// 查询当日或历史日期是否有日线且非 ST；不保证下一交易日订单能成交。
+    pub async fn is_tradable(&self, symbol: StockSymbol, date: Date) -> bool {
+        assert!(date <= self.date, "可交易状态查询不能包含未来数据");
+        self.provider.lock().await.is_tradable(symbol, date).await
+    }
+
     /// 查询闭区间内的原始日线和复权因子，允许回溯至回测开始日以前。
     /// 不复权价格；区间无行情时返回空 Vec，日期或数据无效时 panic。
     pub async fn stock_bars(&self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {

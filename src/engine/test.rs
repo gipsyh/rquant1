@@ -777,3 +777,43 @@ async fn limit_orders_fail_when_signal_factor_cannot_be_verified() {
         assert_eq!(account.positions[&b()].purchased_shares, 100);
     }
 }
+
+#[tokio::test]
+async fn context_tradability_uses_requested_date() {
+    let mut provider = Provider::default();
+    provider
+        .bars
+        .iter_mut()
+        .filter(|bar| bar.date == FIRST)
+        .for_each(|bar| bar.st = true);
+    let positions = BTreeMap::new();
+    let ctx = BtContext {
+        date: NEXT,
+        init_cash: 1000.0,
+        cash: 1000.0,
+        equity: 1000.0,
+        positions: &positions,
+        provider: tokio::sync::Mutex::new(&mut provider),
+    };
+    assert!(!ctx.is_tradable(a(), FIRST).await);
+    assert!(!ctx.is_tradable(a(), FIRST.next_day().unwrap()).await);
+    assert!(ctx.is_tradable(a(), NEXT).await);
+}
+
+#[tokio::test]
+#[should_panic(expected = "未来数据")]
+async fn context_tradability_rejects_future_dates_before_provider_access() {
+    let mut provider = Provider::default();
+    let positions = BTreeMap::new();
+    let ctx = BtContext {
+        date: FIRST,
+        init_cash: 1000.0,
+        cash: 1000.0,
+        equity: 1000.0,
+        positions: &positions,
+        provider: tokio::sync::Mutex::new(&mut provider),
+    };
+    // 持有锁时也应立即拒绝未来查询，而不是尝试访问数据源。
+    let _guard = ctx.provider.lock().await;
+    ctx.is_tradable(a(), NEXT).await;
+}

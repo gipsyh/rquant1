@@ -267,6 +267,18 @@ impl StockHistBar {
         &self.bars
     }
 
+    /// 已覆盖日期有日线且非 ST 才可交易；无日线返回 false，区间外查询 panic。
+    /// 仅用于策略筛选，不判断成交量、涨跌停或订单能否成交。
+    pub fn is_tradable(&self, date: Date) -> bool {
+        assert!(
+            self.range.contains(date),
+            "可交易状态查询日期超出已覆盖范围"
+        );
+        self.bars
+            .binary_search_by_key(&date, |bar| bar.date)
+            .is_ok_and(|index| !self.bars[index].st)
+    }
+
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
             self.bars.iter().all(|bar| self.range.contains(bar.date))
@@ -330,6 +342,19 @@ pub trait DataProvider: Send + Sync {
 
     /// 股票日线，返回时按时间排序
     async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar>;
+
+    /// 查询指定日期是否有日线且非 ST；通过日线查询复用缓存及区间补拉。
+    /// 查询失败或返回数据范围、股票代码无效时 panic，不将失败视为无行情。
+    async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool {
+        let bars = self.stock_bar(symbol, date, date).await;
+        assert!(
+            bars.iter().all(|bar| bar.symbol == symbol),
+            "行情股票不匹配: {symbol}"
+        );
+        StockHistBar::new(DateRange::new(date, date), bars)
+            .unwrap()
+            .is_tradable(date)
+    }
 
     /// 查询指数名称，必须非空；查询失败或指数不存在时 panic。
     async fn index_name(&mut self, symbol: &str) -> String;
