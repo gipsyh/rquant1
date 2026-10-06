@@ -35,7 +35,7 @@ cargo run -- bt low-turnover-trend --help
 
 可配置 `--commission`（默认 0.0003，即万分之三，买卖双向收取）、`--min-commission`（每笔最低佣金，默认 5 元）、`--stamp-tax`（默认 0.0005，即万分之五，仅卖出收取）、`--slippage-bps`（保留参数，仅支持 0，严格按开盘原价成交）、`--lot-size`（默认 100）。`--raw` 仅关闭账户的复权收益估值，均线信号仍使用复权收盘价。资金不足、停牌或涨停导致没有成交时，报告保留全现金净值和 `skipped_orders`，不会伪造交易。
 
-日志默认级别为 `info`，输出到 stderr。设置 `RUST_LOG=rquant=debug` 后，每次请求下载日线分段前会记录股票代码和起止日期；命中缓存或读取内存行情时不输出下载日志。
+日志默认级别为 `info`，输出到 stderr。设置 `RUST_LOG=rquant=debug` 后，每次请求下载日线前会记录股票代码和起止日期；命中缓存或读取内存行情时不输出下载日志。
 
 ```bash
 RUST_LOG=rquant=debug cargo run -- bt --start 20240101 --end 20240131 \
@@ -107,17 +107,21 @@ Python 便利函数目前接受单只目标股票，内部使用同一个多股�
 
 策略配置枚举和 `build()` 位于 `strategy/mod.rs`，`build()` 直接返回 `Box<dyn Strategy>`，`BuyAndHold::new(config)` 直接返回策略实例；配置无效时直接报错（panic）。具体策略的配置与实现放在一起；新增策略时添加对应 config 和枚举变体。`BacktestConfig` 也是引擎实际使用的配置，不再从 CLI 参数复制转换。默认值仅在 clap 属性中定义，Rust 的 `Default` 通过 clap 解析空参数生成配置，不读取进程命令行参数。Rust 的 `Default` 和 CLI 均使用 `20200101` 到 `utils::latest_rqdate()`，截止日期以北京时间 19:00 为分界。
 
-`DataProvider` 使用 `#[async_trait::async_trait]` 定义异步方法，实现时也需要添加该属性，支持 `dyn DataProvider` 动态分发。查询方法均使用 `&mut self`，允许数据源直接更新内部状态。提供 `trading_days(start, end)`、`stock_bar(symbol, start, end)` 和 `index_comp(symbol, start, end)`，分别返回 `Vec<Date>`、`Vec<StockBar>` 和 `IndexHistComp`；请求失败或数据无效时直接 panic，空行情正常返回空数组。引擎启动时只取交易日历；策略查询历史、撮合订单和每日持仓估值时，才查询对应股票和日期。
+`DataProvider` 使用 `#[async_trait::async_trait]` 定义异步方法，实现时也需要添加该属性，支持 `dyn DataProvider` 动态分发。查询方法均使用 `&mut self`，允许数据源直接更新内部状态。提供 `trading_days(range)`、`stock_bar(symbol, range)` 和 `index_comp(symbol, range)`（`range: DateRange`，为日期闭区间），分别返回 `Vec<Date>`、`Vec<StockBar>` 和 `IndexHistComp`；请求失败或数据无效时直接 panic，空行情正常返回空数组。引擎启动时只取交易日历；策略查询历史、撮合订单和每日持仓估值时，才查询对应股票和日期。
 
 指数成分接口返回查询闭区间的历史，通过 `composition(date)` 取得当天已生效的最近一期 `Arc<IndexComp>`，再用 `weights()` 读取股票到权重比例的映射。例如：
 
 ```rust,ignore
-let history = provider.index_comp("000300.XSHG", start, end).await;
+let history = provider.index_comp("000300.XSHG", rquant::utils::DateRange::new(start, end)).await;
 let comp = history.composition(as_of)?;
 for (stock, weight) in comp.weights() {
     println!("{stock}: {weight}"); // 0.005 表示 0.5%
 }
 ```
+
+批量历史查询使用 `ctx.stocks_bars(&symbols, start, end).await`，返回 `BTreeMap<StockSymbol, Vec<StockBar>>`；重复代码合并，无行情股票保留空数组，返回原始价格，日期不得超过策略当日。`DataProvider::stocks_bars(&requests)` 的每项请求是 `(StockSymbol, DateRange)`，支持不同股票或缓存缺口使用不同区间，返回数组与请求逐项对应。数据源默认串行实现；Tushare 固定最多 4 个异步任务并发调用原有 `stock_bar`，不修改 HTTP API，也不拆分整段日线。任务共享连接池和已有 HTTP 并发限制；任一查询失败仍直接 panic。
+
+内存和磁盘缓存均透传批量查询：合并同一股票的请求，仅把未覆盖区间交给底层，首次访问仍预取整个回测区间。基础信息通过 `stocks_info` 批量查询和缓存：Tushare 将去重后的代码以逗号连接，一次请求 `stock_basic`；先查 `L`，只将仍缺失的代码继续按 `D`、`P` 顺序请求，不再逐股并发查询。返回顺序与输入一致，`stock_info` 复用单元素的 `stocks_info`；空输入不发请求，缺失、重复或非请求代码仍报错。地量趋势策略已使用批量基础信息和日线查询进行首次预热及后续追加；历史根数不足时，保留原有按股票向前补拉逻辑。
 
 指数代码接受 `000300`、`000300.SH`、`000300.XSHG` 等写法，同一指数共用缓存。Tushare 的 [`index_weight`](https://tushare.pro/document/2?doc_id=96) 按完整自然月请求，额外回溯起点前一个月；保留起点已生效的最近快照以及区间内全部变更，不保留终点之后的数据。上游百分数除以 100 转为比例，保留零权重、不重新归一化；重复成分、无效权重或达到 6000 行的可能截断响应会报错。空历史可以缓存，若查询日及以前没有快照，`composition` 返回错误，不使用未来快照回填。
 
@@ -178,8 +182,9 @@ CLI 默认在 Tushare 外包装 `DiskCacheProvider::new(provider, start, end)`�
 
 ## 数据与成交口径
 
-- 使用 Tushare [`daily`](https://tushare.pro/document/2?doc_id=27)、[`adj_factor`](https://tushare.pro/document/2?doc_id=28)、[`trade_cal`](https://tushare.pro/document/2?doc_id=26)、[`stk_limit`](https://tushare.pro/document/2?doc_id=183)、[`stock_st`](https://tushare.pro/document/2?doc_id=397)。账号需要这些接口权限；错误会向上传递。仅拉取请求范围内的数据；跨年的历史查询按自然年分段，日期升序排列；成交量从手转为股，成交额从千元转为元。未接入市值或自动限频调度，沿用客户端已有重试机制。
-- `StockBar.st` 按交易日的 `stock_st` 名单填充，覆盖 ST 和 *ST；摘帽后为 `false`。每个非空日线分段按同一股票、日期范围查询 ST 状态，随日线缓存，空日线不额外查询。接口需要 3000 积分起，历史数据从 `20000101` 开始，因此 Tushare 日线查询不支持更早日期；权限不足或响应数据无效直接报错。
+- 使用 Tushare [`daily`](https://tushare.pro/document/2?doc_id=27)、[`adj_factor`](https://tushare.pro/document/2?doc_id=28)、[`trade_cal`](https://tushare.pro/document/2?doc_id=26)、[`stk_limit`](https://tushare.pro/document/2?doc_id=183)、[`stock_st`](https://tushare.pro/document/2?doc_id=397)。账号需要这些接口权限；错误会向上传递。仅拉取请求范围内的数据；每只股票的日线、复权因子、涨跌停价和 ST 状态按完整请求区间各查询一次，不按年拆分，结果按日期升序排列；交易日历仍按年查询；成交量从手转为股，成交额从千元转为元。未接入市值或自动限频调度，沿用客户端已有重试机制。
+- 单次响应上限集中配置在 `tushare_apis!`，具名方法和直接 `query` 共用校验：`daily`、`daily_basic`、`stock_basic` 各 6000 行，`stk_limit` 5800 行，`stock_st` 1000 行，`suspend_d` 5000 行，`index_basic` 8000 行。`index_weight` 保留项目现有 6000 行请求限制和截断保护，其文档未注明数字上限。`adj_factor`、`namechange`、`trade_cal`、`index_daily` 文档也未注明数字上限，显式配置为 `None`（不代表无限制）。各配置旁附官方文档链接。返回数量达到或超过已配置上限时直接 panic（恰好达到上限也可能已截断），不分页或自动拆分重试。日线仍逐根检查对应复权因子，缺失即 panic。
+- `StockBar.st` 按交易日的 `stock_st` 名单填充，覆盖 ST 和 *ST；摘帽后为 `false`。每个非空日线区间按同一股票、日期范围查询 ST 状态，随日线缓存，空日线不额外查询。接口需要 3000 积分起，历史数据从 `20000101` 开始，因此 Tushare 日线查询不支持更早日期；权限不足或响应数据无效直接报错。
 - 策略在收盘后查询包含当天的已完成日线，生成下一交易日开盘订单。内置 buy and hold 为每只目标股票分配 `初始资金 × allocation / 股票数` 的独立预算，第一次可成交时买入；未成交的股票次日重试，已成交的股票不再买入，也不在期末卖出。成交价为下一交易日原始开盘价。
 - 预算包含佣金，按 `lot_size` 向下取整，不允许融资。默认交易单位是简化的 100 股模型，尚未完整实现各板块的申报数量规则；例如科创板使用前需自行配置交易单位。费用在 `BacktestConfig` 中配置：买卖佣金均为 `max(notional × commission_rate, minimum_commission)`，默认万分之三、每笔最低 5 元；印花税仅卖出时收取 `notional × stamp_tax_rate`，默认万分之五，无最低收费。买入扣除成交额和佣金，卖出到账为成交额减佣金、印花税。税率在整个回测区间固定使用配置值；当前不计算过户费。
 - 开盘撮合只使用开盘价、涨跌停价及原始复权因子，不用当日 high、low、close 或全天成交量决定是否成交。无开盘行情、开盘价无效、缺少有效涨跌停价，或买入触及涨停／卖出触及跌停时失败。限价不满足开盘条件即失败，不等待盘中触价；不模拟盘口排队或成交量容量。日线完整性仍在历史查询和收盘估值时校验。

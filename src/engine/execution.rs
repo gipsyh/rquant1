@@ -180,7 +180,7 @@ impl BacktestEngine {
         for leg in legs {
             if let std::collections::btree_map::Entry::Vacant(entry) = bars.entry(leg.symbol) {
                 let bar = provider
-                    .stock_bar(leg.symbol, date, date)
+                    .stock_bar(leg.symbol, DateRange::new(date, date))
                     .await
                     .into_iter()
                     .next();
@@ -195,7 +195,7 @@ impl BacktestEngine {
                 {
                     entry.insert(
                         provider
-                            .stock_bar(leg.symbol, signal_date, signal_date)
+                            .stock_bar(leg.symbol, DateRange::new(signal_date, signal_date))
                             .await
                             .into_iter()
                             .next(),

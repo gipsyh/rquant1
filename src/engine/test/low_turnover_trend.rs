@@ -21,6 +21,7 @@ struct Source {
     comp: IndexHistComp,
     days: Vec<Date>,
     queries: Queries,
+    batch_sizes: Vec<usize>,
 }
 
 impl Source {
@@ -52,6 +53,7 @@ impl Source {
             .unwrap(),
             days: vec![DAY, DAY.next_day().unwrap(), DAY + Duration::days(2)],
             queries: Arc::default(),
+            batch_sizes: Vec::new(),
         }
     }
 }
@@ -68,7 +70,17 @@ impl DataProvider for Source {
             bars: None,
         }
     }
-    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+        self.batch_sizes.push(requests.len());
+        let mut results = Vec::new();
+        for &(symbol, range) in requests {
+            results.push(self.stock_bar(symbol, range).await);
+        }
+        results
+    }
+
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+        let (start, end) = (range.start(), range.end());
         self.queries.lock().unwrap().push((symbol, start, end));
         self.bars
             .iter()
@@ -79,11 +91,13 @@ impl DataProvider for Source {
     async fn index_name(&mut self, _: &str) -> String {
         "测试指数".into()
     }
-    async fn index_comp(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
+    async fn index_comp(&mut self, symbol: &str, range: DateRange) -> IndexHistComp {
+        let (start, end) = (range.start(), range.end());
         assert_eq!(symbol, "399101.XSHE");
         self.comp.slice(start, end).unwrap()
     }
-    async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date> {
+    async fn trading_days(&mut self, range: DateRange) -> Vec<Date> {
+        let (start, end) = (range.start(), range.end());
         self.days
             .iter()
             .filter(|&&day| start <= day && day <= end)
@@ -444,4 +458,20 @@ fn cli_accepts_both_strategy_spellings_and_validates_parameters() {
     ] {
         assert!(std::panic::catch_unwind(|| LowTurnoverTrend::new(bad)).is_err());
     }
+}
+
+#[tokio::test]
+async fn strategy_batches_warmup_and_incremental_history() {
+    let mut source = Source::new(&[a(), b(), c()]);
+    let mut strategy = LowTurnoverTrend::new(config());
+    signal(&mut strategy, &mut source, DAY, &BTreeMap::new()).await;
+    assert_eq!(source.batch_sizes, vec![3]);
+    signal(
+        &mut strategy,
+        &mut source,
+        DAY.next_day().unwrap(),
+        &BTreeMap::new(),
+    )
+    .await;
+    assert_eq!(source.batch_sizes, vec![3, 3]);
 }

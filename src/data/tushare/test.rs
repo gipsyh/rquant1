@@ -13,7 +13,7 @@ use super::provider::{is_rate_limited, is_retryable};
 use crate::data::{DataProvider, StockSymbol};
 use crate::engine::{BacktestConfig, BacktestEngine};
 use crate::strategy::{BuyAndHold, BuyAndHoldConfig};
-use crate::utils::parse_date;
+use crate::utils::{DateRange, parse_date};
 use serde_json::{Value, json};
 use std::time::Duration;
 use wiremock::matchers::{body_partial_json, method, path};
@@ -650,8 +650,10 @@ async fn missing_factor_fails_instead_of_silently_switching_to_raw_returns() {
     provider(&server)
         .stock_bar(
             StockSymbol::from("000001"),
-            parse_date("20240101").unwrap(),
-            parse_date("20240104").unwrap(),
+            DateRange::new(
+                parse_date("20240101").unwrap(),
+                parse_date("20240104").unwrap(),
+            ),
         )
         .await;
 }
@@ -669,8 +671,10 @@ async fn duplicate_dates_and_foreign_symbols_are_rejected() {
             provider(&server)
                 .stock_bar(
                     StockSymbol::from("000001"),
-                    parse_date("20240101").unwrap(),
-                    parse_date("20240104").unwrap(),
+                    DateRange::new(
+                        parse_date("20240101").unwrap(),
+                        parse_date("20240104").unwrap(),
+                    ),
                 )
                 .await;
         })
@@ -736,8 +740,10 @@ async fn requests_full_stock_history_without_year_chunks() {
     let bars = provider(&server)
         .stock_bar(
             StockSymbol::from("000001"),
-            parse_date("20230101").unwrap(),
-            parse_date("20260928").unwrap(),
+            DateRange::new(
+                parse_date("20230101").unwrap(),
+                parse_date("20260928").unwrap(),
+            ),
         )
         .await;
     assert_eq!(bars.len(), 2);
@@ -805,8 +811,10 @@ async fn empty_daily_query_returns_no_bars() {
     let bars = provider(&server)
         .stock_bar(
             StockSymbol::from("000001"),
-            parse_date("20240101").unwrap(),
-            parse_date("20240104").unwrap(),
+            DateRange::new(
+                parse_date("20240101").unwrap(),
+                parse_date("20240104").unwrap(),
+            ),
         )
         .await;
     assert!(bars.is_empty());
@@ -827,8 +835,10 @@ async fn upstream_permission_error_propagates_to_caller() {
     provider(&server)
         .stock_bar(
             StockSymbol::from("000001"),
-            parse_date("20240101").unwrap(),
-            parse_date("20240104").unwrap(),
+            DateRange::new(
+                parse_date("20240101").unwrap(),
+                parse_date("20240104").unwrap(),
+            ),
         )
         .await;
 }
@@ -934,8 +944,10 @@ async fn st_status_is_joined_by_date_without_carrying_it_forward() {
     let bars = provider(&server)
         .stock_bar(
             StockSymbol::from("000001"),
-            parse_date("20240101").unwrap(),
-            parse_date("20240104").unwrap(),
+            DateRange::new(
+                parse_date("20240101").unwrap(),
+                parse_date("20240104").unwrap(),
+            ),
         )
         .await;
     assert_eq!(
@@ -982,8 +994,10 @@ async fn invalid_st_rows_are_rejected() {
             provider(&server)
                 .stock_bar(
                     StockSymbol::from("000001"),
-                    parse_date("20240101").unwrap(),
-                    parse_date("20240104").unwrap(),
+                    DateRange::new(
+                        parse_date("20240101").unwrap(),
+                        parse_date("20240104").unwrap(),
+                    ),
                 )
                 .await;
         })
@@ -1013,8 +1027,10 @@ async fn st_permission_failure_is_not_treated_as_non_st() {
     provider(&server)
         .stock_bar(
             StockSymbol::from("000001"),
-            parse_date("20240101").unwrap(),
-            parse_date("20240104").unwrap(),
+            DateRange::new(
+                parse_date("20240101").unwrap(),
+                parse_date("20240104").unwrap(),
+            ),
         )
         .await;
 }
@@ -1026,8 +1042,10 @@ async fn dates_before_st_coverage_are_rejected() {
     provider(&server)
         .stock_bar(
             StockSymbol::from("000001"),
-            parse_date("19991231").unwrap(),
-            parse_date("20000104").unwrap(),
+            DateRange::new(
+                parse_date("19991231").unwrap(),
+                parse_date("20000104").unwrap(),
+            ),
         )
         .await;
 }
@@ -1104,4 +1122,239 @@ async fn stock_info_rejects_missing_duplicate_and_invalid_metadata() {
                 .is_panic()
         );
     }
+}
+
+#[tokio::test]
+async fn stocks_bars_runs_four_downloads_and_respects_shared_http_limit() {
+    use crate::data::MemCacheProvider;
+    // HTTP 上限高于 4 时仍只启动 4 只；低于 4 时继续服从共享信号量。
+    for http_limit in [8, 2] {
+        let server = MockServer::start().await;
+        Mock::given(path("/stock_basic"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = request.body_json().unwrap();
+                ResponseTemplate::new(200).set_body_json(json!({"code": 0, "data": {
+                    "fields": ["ts_code", "name", "list_date", "delist_date", "industry"],
+                    "items": body["params"]["ts_code"].as_str().unwrap().split(',')
+                        .map(|code| json!([code, "测试", "20000101", null, null])).collect::<Vec<_>>()
+                }}))
+            })
+            .mount(&server)
+            .await;
+        Mock::given(path("/daily"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_secs(10))
+                    .set_body_json(json!({"code": 0, "data": {"fields": [], "items": []}})),
+            )
+            .mount(&server)
+            .await;
+        let start = parse_date("20250101").unwrap();
+        let end = parse_date("20260928").unwrap();
+        let provider = TushareProvider::new()
+            .with_base_url(server.uri())
+            .with_retry(RetryPolicy {
+                max_concurrency: http_limit,
+                ..RetryPolicy::none()
+            });
+        // 穿过两层缓存，验证批量调用未退化成逐只加锁/下载。
+        let mut cache = MemCacheProvider::new(
+            Box::new(MemCacheProvider::new(Box::new(provider), start, end)),
+            start,
+            end,
+        );
+        let requests: Vec<_> = (1..=6)
+            .map(|i| {
+                (
+                    StockSymbol::from(format!("{i:06}.SZ").as_str()),
+                    DateRange::new(start, start),
+                )
+            })
+            .collect();
+        let batch = cache.stocks_bars(&requests);
+        tokio::pin!(batch);
+        let expected = 4.min(http_limit);
+        tokio::select! {
+            _ = &mut batch => panic!("延迟响应不应提前完成"),
+            _ = async {
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    loop {
+                        let received = server.received_requests().await.unwrap();
+                        if received.iter().filter(|r| r.url.path() == "/daily").count() >= expected { break; }
+                        tokio::time::sleep(Duration::from_millis(5)).await;
+                    }
+                }).await.expect("多个股票的下载没有同时启动");
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                let received = server.received_requests().await.unwrap();
+                let daily: Vec<_> = received.iter().filter(|r| r.url.path() == "/daily").collect();
+                assert_eq!(daily.len(), expected);
+                for request in daily {
+                    let body: Value = request.body_json().unwrap();
+                    assert_eq!(body["params"]["start_date"], "20250101");
+                    assert_eq!(body["params"]["end_date"], "20260928");
+                }
+            } => {}
+        }
+        // 丢弃整批 future 会取消未完成下载，无后台任务继续写缓存。
+    }
+}
+
+#[tokio::test]
+async fn stocks_bars_preserves_request_order_and_empty_results() {
+    let server = MockServer::start().await;
+    for api in ["daily", "adj_factor", "stk_limit", "stock_st"] {
+        Mock::given(path(format!("/{api}")))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = request.body_json().unwrap();
+                let symbol = &body["params"]["ts_code"];
+                let date = &body["params"]["start_date"];
+                let (fields, items) = match api {
+                    "daily" if symbol == "000002.SZ" => (json!([]), json!([])),
+                    "daily" => (
+                        json!([
+                            "ts_code",
+                            "trade_date",
+                            "open",
+                            "high",
+                            "low",
+                            "close",
+                            "vol",
+                            "amount"
+                        ]),
+                        json!([[symbol, date, 10, 11, 9, 10, 100, 100]]),
+                    ),
+                    "adj_factor" => (
+                        json!(["ts_code", "trade_date", "adj_factor"]),
+                        json!([[symbol, date, 2]]),
+                    ),
+                    "stk_limit" => (
+                        json!(["ts_code", "trade_date", "up_limit", "down_limit"]),
+                        json!([[symbol, date, 11, 9]]),
+                    ),
+                    _ => (json!(["ts_code", "trade_date"]), json!([])),
+                };
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"code": 0, "data": {"fields": fields, "items": items}}))
+            })
+            .mount(&server)
+            .await;
+    }
+    let day = parse_date("20250102").unwrap();
+    let symbols: Vec<_> = ["000003", "000002", "000001"].map(StockSymbol::from).into();
+    let requests: Vec<_> = symbols
+        .iter()
+        .map(|&s| (s, DateRange::new(day, day)))
+        .collect();
+    let mut provider = provider(&server);
+    let results = provider.stocks_bars(&requests).await;
+    assert_eq!(results.len(), 3);
+    assert!(results[1].is_empty());
+    for (i, &symbol) in symbols.iter().enumerate() {
+        assert_eq!(
+            results[i],
+            provider.stock_bar(symbol, DateRange::new(day, day)).await
+        );
+    }
+    assert!(provider.stocks_bars(&[]).await.is_empty());
+}
+
+async fn stock_info_batch_response(server: &MockServer, codes: &str, status: &str, rows: Value) {
+    Mock::given(path("/stock_basic"))
+        .and(body_partial_json(
+            json!({"params": {"ts_code": codes, "list_status": status}}),
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"code": 0, "data": {
+                "fields": ["ts_code", "name", "list_date", "delist_date", "industry"],
+                "items": rows
+            }})),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn stocks_info_uses_one_request_and_restores_input_order_and_duplicates() {
+    let server = MockServer::start().await;
+    stock_info_batch_response(
+        &server,
+        "000001.SZ,600000.SH",
+        "L",
+        json!([
+            ["600000.SH", "浦发银行", "19991110", null, "银行"],
+            ["000001.SZ", "平安银行", "19910403", null, "银行"]
+        ]),
+    )
+    .await;
+    let a = StockSymbol::from("000001.SZ");
+    let b = StockSymbol::from("600000.SH");
+    let mut source = provider(&server);
+    assert!(source.stocks_info(&[]).await.is_empty());
+    assert!(server.received_requests().await.unwrap().is_empty());
+    let results = source.stocks_info(&[b, a, b]).await;
+    assert_eq!(
+        results.iter().map(|s| s.symbol).collect::<Vec<_>>(),
+        vec![b, a, b]
+    );
+    assert_eq!(results[0].name, "浦发银行");
+    assert_eq!(results[1].name, "平安银行");
+    assert_eq!(results[0], results[2]);
+    assert!(results.iter().all(|s| s.bars.is_none()));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn stocks_info_queries_only_unresolved_codes_in_each_status() {
+    let server = MockServer::start().await;
+    stock_info_batch_response(
+        &server,
+        "000001.SZ,000002.SZ,600000.SH",
+        "L",
+        json!([["000001.SZ", "上市股票", "19910403", null, null]]),
+    )
+    .await;
+    stock_info_batch_response(
+        &server,
+        "000002.SZ,600000.SH",
+        "D",
+        json!([["600000.SH", "退市股票", "19991110", "20240101", null]]),
+    )
+    .await;
+    stock_info_batch_response(
+        &server,
+        "000002.SZ",
+        "P",
+        json!([["000002.SZ", "暂停上市股票", "19910129", null, null]]),
+    )
+    .await;
+    let symbols = ["000002.SZ", "600000.SH", "000001.SZ"].map(StockSymbol::from);
+    let results = provider(&server).stocks_info(&symbols).await;
+    assert_eq!(
+        results.iter().map(|s| s.symbol).collect::<Vec<_>>(),
+        symbols
+    );
+    assert_eq!(results[0].name, "暂停上市股票");
+    assert_eq!(results[1].delisted, Some(parse_date("20240101").unwrap()));
+    assert_eq!(results[2].name, "上市股票");
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+}
+
+#[tokio::test]
+#[should_panic(expected = "找不到已上市股票的基础信息: 000002.SZ")]
+async fn stocks_info_rejects_partial_results_instead_of_returning_incomplete_batch() {
+    let server = MockServer::start().await;
+    stock_info_batch_response(
+        &server,
+        "000001.SZ,000002.SZ",
+        "L",
+        json!([["000001.SZ", "上市股票", "19910403", null, null]]),
+    )
+    .await;
+    for status in ["D", "P"] {
+        stock_info_batch_response(&server, "000002.SZ", status, json!([])).await;
+    }
+    provider(&server)
+        .stocks_info(&["000001.SZ".into(), "000002.SZ".into()])
+        .await;
 }

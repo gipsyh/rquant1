@@ -1,5 +1,6 @@
 use super::mem::MemCacheProvider;
 use crate::data::{DataProvider, IndexHistComp, RqData, Stock, StockBar, StockSymbol};
+use crate::utils::DateRange;
 use anyhow::{Context, Result, ensure};
 use std::{io::Write, path::PathBuf};
 use time::Date;
@@ -105,24 +106,32 @@ impl Drop for DiskCacheProvider {
 
 #[async_trait::async_trait]
 impl DataProvider for DiskCacheProvider {
-    async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date> {
-        self.inner.trading_days(start, end).await
+    async fn trading_days(&mut self, range: DateRange) -> Vec<Date> {
+        self.inner.trading_days(range).await
     }
 
     async fn stock_info(&mut self, symbol: StockSymbol) -> Stock {
         self.inner.stock_info(symbol).await
     }
 
-    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
-        self.inner.stock_bar(symbol, start, end).await
+    async fn stocks_info(&mut self, symbols: &[StockSymbol]) -> Vec<Stock> {
+        self.inner.stocks_info(symbols).await
+    }
+
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+        self.inner.stock_bar(symbol, range).await
+    }
+
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+        self.inner.stocks_bars(requests).await
     }
 
     async fn index_name(&mut self, symbol: &str) -> String {
         self.inner.index_name(symbol).await
     }
 
-    async fn index_comp(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
-        self.inner.index_comp(symbol, start, end).await
+    async fn index_comp(&mut self, symbol: &str, range: DateRange) -> IndexHistComp {
+        self.inner.index_comp(symbol, range).await
     }
 }
 

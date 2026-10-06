@@ -24,7 +24,7 @@ impl BacktestEngine {
         self.config.validate()?;
         let (start, end) = (self.config.start, self.config.end);
         let mut provider = MemCacheProvider::new(provider, start, end);
-        let calendar = provider.trading_days(start, end).await;
+        let calendar = provider.trading_days(DateRange::new(start, end)).await;
         let days: BTreeSet<_> = calendar.iter().copied().collect();
         anyhow::ensure!(
             !days.is_empty()
@@ -144,7 +144,7 @@ pub(super) async fn load_bars(
     end: time::Date,
     adjusted: bool,
 ) -> Vec<StockBar> {
-    let bars = provider.stock_bar(symbol, start, end).await;
+    let bars = provider.stock_bar(symbol, DateRange::new(start, end)).await;
     for bar in &bars {
         validate_bar(bar, adjusted).unwrap();
     }

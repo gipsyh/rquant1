@@ -62,20 +62,21 @@ impl DataProvider for Provider {
         }
     }
 
-    async fn trading_days(&mut self, _start: Date, _end: Date) -> Vec<Date> {
+    async fn trading_days(&mut self, range: DateRange) -> Vec<Date> {
+        let (_start, _end) = (range.start(), range.end());
         vec![FIRST, NEXT, LAST]
     }
-    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
         self.bars
             .iter()
-            .filter(|bar| bar.symbol == symbol && bar.date >= start && bar.date <= end)
+            .filter(|bar| bar.symbol == symbol && range.contains(bar.date))
             .copied()
             .collect()
     }
     async fn index_name(&mut self, _: &str) -> String {
         unreachable!()
     }
-    async fn index_comp(&mut self, _: &str, _: Date, _: Date) -> IndexHistComp {
+    async fn index_comp(&mut self, _: &str, _range: DateRange) -> IndexHistComp {
         unreachable!()
     }
 }
@@ -851,4 +852,32 @@ async fn index_context_rejects_future_composition_before_provider_access() {
     };
     let _guard = ctx.provider.lock().await;
     ctx.index_comp("399101.XSHE", FIRST, NEXT).await;
+}
+
+#[tokio::test]
+async fn stocks_bars_keeps_raw_data_empty_symbols_and_rejects_future_dates() {
+    use futures_util::FutureExt;
+    let mut provider = Provider {
+        bars: vec![bar(a(), FIRST), bar(a(), NEXT)],
+    };
+    let positions = BTreeMap::new();
+    let ctx = BtContext {
+        date: FIRST,
+        init_cash: 1000.0,
+        cash: 1000.0,
+        equity: 1000.0,
+        positions: &positions,
+        provider: tokio::sync::Mutex::new(&mut provider),
+    };
+    let results = ctx.stocks_bars(&[b(), a(), a()], FIRST, FIRST).await;
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[&a()], vec![bar(a(), FIRST)]);
+    assert!(results[&b()].is_empty());
+    assert!(ctx.stocks_bars(&[], FIRST, FIRST).await.is_empty());
+    assert!(
+        std::panic::AssertUnwindSafe(ctx.stocks_bars(&[a()], FIRST, NEXT))
+            .catch_unwind()
+            .await
+            .is_err()
+    );
 }

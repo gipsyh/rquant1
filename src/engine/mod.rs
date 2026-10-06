@@ -4,7 +4,7 @@ mod rbt;
 mod test;
 
 use crate::data::{DataProvider, IndexHistComp, Stock, StockBar, StockSymbol};
-use crate::utils::{latest_rqdate, parse_date};
+use crate::utils::{DateRange, latest_rqdate, parse_date};
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser};
 pub use rbt::BacktestEngine;
@@ -106,6 +106,28 @@ impl BtContext<'_> {
         self.provider.lock().await.stock_info(symbol).await
     }
 
+    /// 批量查询股票基础信息，重复代码合并。
+    pub async fn stocks_info(&self, symbols: &[StockSymbol]) -> BTreeMap<StockSymbol, Stock> {
+        let symbols: Vec<_> = symbols
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let infos = self.provider.lock().await.stocks_info(&symbols).await;
+        assert_eq!(infos.len(), symbols.len(), "基础信息批量结果数量不匹配");
+        symbols
+            .into_iter()
+            .zip(infos)
+            .map(|(symbol, info)| {
+                assert_eq!(symbol, info.symbol, "股票基础信息代码不匹配");
+                info.validate().unwrap();
+                assert!(info.bars.is_none(), "股票基础信息查询不应返回日线");
+                (symbol, info)
+            })
+            .collect()
+    }
+
     /// 查询当前日期及以前的指数成分历史，通过 composition(date) 获取已生效成分。
     pub async fn index_comp(&self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
         assert!(
@@ -115,7 +137,7 @@ impl BtContext<'_> {
         self.provider
             .lock()
             .await
-            .index_comp(symbol, start, end)
+            .index_comp(symbol, DateRange::new(start, end))
             .await
     }
 
@@ -123,6 +145,52 @@ impl BtContext<'_> {
     pub async fn is_tradable(&self, symbol: StockSymbol, date: Date) -> bool {
         assert!(date <= self.date, "可交易状态查询不能包含未来数据");
         self.provider.lock().await.is_tradable(symbol, date).await
+    }
+
+    /// 批量查询同一闭区间的原始日线；重复代码合并，无行情股票保留空 Vec。
+    /// 一次加锁传递整批请求，由数据源内部并发下载。
+    pub async fn stocks_bars(
+        &self,
+        symbols: &[StockSymbol],
+        start: Date,
+        end: Date,
+    ) -> BTreeMap<StockSymbol, Vec<StockBar>> {
+        assert!(
+            start <= end && end <= self.date,
+            "历史查询区间无效或包含未来数据"
+        );
+        let symbols: Vec<_> = symbols
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let requests: Vec<_> = symbols
+            .iter()
+            .map(|&s| (s, DateRange::new(start, end)))
+            .collect();
+        let results = self.provider.lock().await.stocks_bars(&requests).await;
+        assert_eq!(results.len(), requests.len(), "日线批量结果数量不匹配");
+        symbols
+            .into_iter()
+            .zip(results)
+            .map(|(symbol, bars)| {
+                let mut previous = None;
+                for bar in &bars {
+                    assert!(
+                        bar.symbol == symbol && bar.date >= start && bar.date <= end,
+                        "批量日线返回请求范围外数据"
+                    );
+                    assert!(
+                        previous.is_none_or(|date| date < bar.date),
+                        "批量日线日期未严格升序"
+                    );
+                    rbt::validate_bar(bar, true).unwrap();
+                    previous = Some(bar.date);
+                }
+                (symbol, bars)
+            })
+            .collect()
     }
 
     /// 查询闭区间内的原始日线和复权因子，允许回溯至回测开始日以前。

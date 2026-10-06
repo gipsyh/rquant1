@@ -2,8 +2,9 @@
 
 use super::table::Table;
 use crate::data::{Adjustment, DataProvider, IndexHistComp, Stock, StockBar, StockSymbol};
-use crate::utils::parse_date;
+use crate::utils::{DateRange, parse_date};
 use anyhow::{Context, Result, anyhow};
+use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -117,6 +118,7 @@ impl RetryPolicy {
 /// # Ok(())
 /// # }
 /// ```
+#[derive(Clone)]
 pub struct TushareProvider {
     token: String,
     base_url: String,
@@ -460,70 +462,78 @@ struct StockBasic {
 }
 
 impl TushareProvider {
-    async fn fetch_stock_info(&self, symbol: StockSymbol) -> Result<Stock> {
-        let code = symbol.tushare_code();
-        // stock_basic 默认只返回上市股票，退市和暂停上市股票需显式查询。
+    async fn fetch_stocks_info(&self, symbols: &[StockSymbol]) -> Result<Vec<Stock>> {
+        // 去重后按状态批量查询；已经找到的股票不再请求下一个状态。
+        let mut pending: BTreeMap<_, _> = symbols
+            .iter()
+            .map(|&symbol| (symbol.tushare_code(), symbol))
+            .collect();
+        let mut infos = BTreeMap::new();
         for status in ["L", "D", "P"] {
+            if pending.is_empty() {
+                break;
+            }
+            let codes = pending.keys().cloned().collect::<Vec<_>>().join(",");
             let rows = self
                 .stock_basic(
-                    params! { "ts_code" => code.clone(), "list_status" => status },
+                    params! { "ts_code" => codes, "list_status" => status },
                     "ts_code,name,list_date,delist_date,industry",
                 )
                 .await?
                 .to_typed::<StockBasic>()?;
-            if rows.is_empty() {
-                continue;
+            for row in rows {
+                let symbol = pending.remove(&row.ts_code).with_context(|| {
+                    format!("股票基础信息返回重复或不匹配的代码: {}", row.ts_code)
+                })?;
+                let info = Stock {
+                    symbol,
+                    bars: None,
+                    name: row.name,
+                    listed: parse_date(&row.list_date)?,
+                    delisted: row
+                        .delist_date
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|date| parse_date(&date))
+                        .transpose()?,
+                    industry: row.industry.filter(|value| !value.trim().is_empty()),
+                };
+                info.validate()?;
+                anyhow::ensure!(
+                    status != "D" || info.delisted.is_some(),
+                    "退市股票缺少退市日期: {}",
+                    row.ts_code
+                );
+                infos.insert(symbol, info);
             }
-            anyhow::ensure!(
-                rows.len() == 1 && rows[0].ts_code == code,
-                "股票基础信息返回重复或不匹配的代码: {code}"
-            );
-            let row = rows.into_iter().next().unwrap();
-            let info = Stock {
-                symbol,
-                bars: None,
-                name: row.name,
-                listed: parse_date(&row.list_date)?,
-                delisted: row
-                    .delist_date
-                    .filter(|value| !value.trim().is_empty())
-                    .map(|date| parse_date(&date))
-                    .transpose()?,
-                industry: row.industry.filter(|value| !value.trim().is_empty()),
-            };
-            info.validate()?;
-            anyhow::ensure!(
-                status != "D" || info.delisted.is_some(),
-                "退市股票缺少退市日期: {code}"
-            );
-            return Ok(info);
         }
-        anyhow::bail!("找不到已上市股票的基础信息: {code}")
+        anyhow::ensure!(
+            pending.is_empty(),
+            "找不到已上市股票的基础信息: {}",
+            pending.keys().cloned().collect::<Vec<_>>().join(",")
+        );
+        // 上游返回顺序不固定；恢复输入顺序和重复项。
+        Ok(symbols.iter().map(|symbol| infos[symbol].clone()).collect())
     }
 }
 
 #[async_trait::async_trait]
 impl DataProvider for TushareProvider {
-    async fn stock_info(&mut self, symbol: StockSymbol) -> Stock {
-        self.fetch_stock_info(symbol)
+    async fn stocks_info(&mut self, symbols: &[StockSymbol]) -> Vec<Stock> {
+        self.fetch_stocks_info(symbols)
             .await
             .unwrap_or_else(|err| panic!("股票基础信息查询失败: {err:#}"))
     }
 
-    async fn index_name(&mut self, symbol: &str) -> String {
-        self.fetch_index_name(symbol)
+    async fn stock_info(&mut self, symbol: StockSymbol) -> Stock {
+        self.stocks_info(&[symbol])
             .await
-            .unwrap_or_else(|err| panic!("指数名称查询失败: {err:#}"))
+            .into_iter()
+            .next()
+            .unwrap()
     }
 
-    async fn index_comp(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp {
-        self.fetch_index_comp(symbol, start, end)
-            .await
-            .unwrap_or_else(|err| panic!("指数成分查询失败: {err:#}"))
-    }
-
-    async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date> {
-        assert!(start <= end, "开始日期不能晚于结束日期");
+    async fn trading_days(&mut self, range: DateRange) -> Vec<Date> {
+        let (start, end) = (range.start(), range.end());
         let mut calendar = BTreeMap::new();
         let mut cursor = start;
         loop {
@@ -563,8 +573,8 @@ impl DataProvider for TushareProvider {
         calendar.into_keys().collect()
     }
 
-    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar> {
-        assert!(start <= end, "开始日期不能晚于结束日期");
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar> {
+        let (start, end) = (range.start(), range.end());
         assert!(
             start >= time::macros::date!(2000 - 01 - 01),
             "stock_st 仅提供 20000101 起的历史状态，无法确定更早日线的 st"
@@ -666,5 +676,30 @@ impl DataProvider for TushareProvider {
             }
         }
         bars.into_values().collect()
+    }
+
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+        // 每项复用完整的单股票处理流程；共享 HTTP 连接池和请求信号量。
+        // buffered 保持输入顺序，最多同时处理 4 项，失败沿用 stock_bar 的 panic。
+        stream::iter(requests.iter().copied().map(|(symbol, range)| {
+            let mut provider = self.clone();
+            async move { provider.stock_bar(symbol, range).await }
+        }))
+        .buffered(4)
+        .collect()
+        .await
+    }
+
+    async fn index_name(&mut self, symbol: &str) -> String {
+        self.fetch_index_name(symbol)
+            .await
+            .unwrap_or_else(|err| panic!("指数名称查询失败: {err:#}"))
+    }
+
+    async fn index_comp(&mut self, symbol: &str, range: DateRange) -> IndexHistComp {
+        let (start, end) = (range.start(), range.end());
+        self.fetch_index_comp(symbol, start, end)
+            .await
+            .unwrap_or_else(|err| panic!("指数成分查询失败: {err:#}"))
     }
 }

@@ -341,18 +341,37 @@ pub struct RqData {
 #[async_trait::async_trait]
 pub trait DataProvider: Send + Sync {
     /// 股票交易日查询
-    async fn trading_days(&mut self, start: Date, end: Date) -> Vec<Date>;
+    async fn trading_days(&mut self, range: DateRange) -> Vec<Date>;
 
     /// 查询股票基础信息，返回 Stock 的 bars 为 None；数据无效或查询失败时 panic。
     async fn stock_info(&mut self, symbol: StockSymbol) -> Stock;
 
+    /// 批量基础信息，返回顺序与输入一致；每个 Stock 的 bars 为 None。
+    async fn stocks_info(&mut self, symbols: &[StockSymbol]) -> Vec<Stock> {
+        let mut results = Vec::with_capacity(symbols.len());
+        for &symbol in symbols {
+            results.push(self.stock_info(symbol).await);
+        }
+        results
+    }
+
     /// 股票日线，返回时按时间排序
-    async fn stock_bar(&mut self, symbol: StockSymbol, start: Date, end: Date) -> Vec<StockBar>;
+    async fn stock_bar(&mut self, symbol: StockSymbol, range: DateRange) -> Vec<StockBar>;
+
+    /// 批量日线请求，每项为（股票、日期闭区间）。
+    /// 返回数组与请求逐项对应，空行情保留空 Vec；默认串行，数据源可覆盖为并发。
+    async fn stocks_bars(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<Vec<StockBar>> {
+        let mut results = Vec::with_capacity(requests.len());
+        for &(symbol, range) in requests {
+            results.push(self.stock_bar(symbol, range).await);
+        }
+        results
+    }
 
     /// 查询指定日期是否有日线且非 ST；通过日线查询复用缓存及区间补拉。
     /// 查询失败或返回数据范围、股票代码无效时 panic，不将失败视为无行情。
     async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool {
-        let bars = self.stock_bar(symbol, date, date).await;
+        let bars = self.stock_bar(symbol, DateRange::new(date, date)).await;
         assert!(
             bars.iter().all(|bar| bar.symbol == symbol),
             "行情股票不匹配: {symbol}"
@@ -366,7 +385,7 @@ pub trait DataProvider: Send + Sync {
     async fn index_name(&mut self, symbol: &str) -> String;
 
     /// 查询指数在闭区间内的成分历史；可包含起点前已生效的基准快照。
-    /// 返回范围为 `start..=end`，通过 `composition(date)` 取当天成分。
+    /// 返回范围为 `range`，通过 `composition(date)` 取当天成分。
     /// 没有快照时返回空历史，当天查询会报错；数据源失败沿用日线接口的 panic 约定。
-    async fn index_comp(&mut self, symbol: &str, start: Date, end: Date) -> IndexHistComp;
+    async fn index_comp(&mut self, symbol: &str, range: DateRange) -> IndexHistComp;
 }

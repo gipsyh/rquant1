@@ -1373,6 +1373,7 @@ dependencies = [
  "async-trait",
  "clap",
  "env_logger",
+ "futures-util",
  "log",
  "pyo3",
  "reqwest",

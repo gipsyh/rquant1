@@ -253,7 +253,10 @@ mod test {
         )
         .await;
         let hist = provider(&server)
-            .index_comp("000300.XSHG", date!(2024 - 01 - 05), date!(2024 - 02 - 15))
+            .index_comp(
+                "000300.XSHG",
+                DateRange::new(date!(2024 - 01 - 05), date!(2024 - 02 - 15)),
+            )
             .await;
         assert_eq!(
             hist.range(),

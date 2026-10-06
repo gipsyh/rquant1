@@ -107,7 +107,13 @@ impl LowTurnoverTrend {
     }
 
     /// 缓存每只股票最近 N 根复权日线；不足时向前补拉，最多到历史下界/上市日。
-    async fn update_history(&mut self, ctx: &BtContext<'_>, symbol: StockSymbol, listed: Date) {
+    async fn update_history(
+        &mut self,
+        ctx: &BtContext<'_>,
+        symbol: StockSymbol,
+        listed: Date,
+        bars: Vec<StockBar>,
+    ) {
         let end = ctx.date();
         let floor = listed.max(self.config.history_start);
         let count = self.config.warmup_period();
@@ -115,10 +121,7 @@ impl LowTurnoverTrend {
         if let Some(window) = self.histories.get_mut(&symbol) {
             assert!(end >= window.end, "策略日期不能倒退");
             if end > window.end {
-                for bar in ctx
-                    .stock_bars(symbol, window.end.next_day().unwrap(), end)
-                    .await
-                {
+                for bar in bars {
                     window.bars.push_back(bar.adjusted());
                     if window.bars.len() > count {
                         window.bars.pop_front();
@@ -128,7 +131,6 @@ impl LowTurnoverTrend {
             }
         } else {
             let start = end.checked_sub(span).unwrap_or(Date::MIN).max(floor);
-            let bars = ctx.stock_bars(symbol, start, end).await;
             let first = bars.len().saturating_sub(count);
             self.histories.insert(
                 symbol,
@@ -177,19 +179,51 @@ impl LowTurnoverTrend {
         };
         // 排序使查询顺序和相同成交额下的选股结果可复现。
         let members: BTreeSet<_> = comp.weights().keys().copied().collect();
+        let missing: Vec<_> = members
+            .iter()
+            .copied()
+            .filter(|s| !self.listed_dates.contains_key(s))
+            .collect();
+        for (symbol, info) in ctx.stocks_info(&missing).await {
+            self.listed_dates.insert(symbol, info.listed);
+        }
+        let members: Vec<_> = members
+            .into_iter()
+            .filter(|s| {
+                (date - self.listed_dates[s]).whole_days()
+                    >= i64::from(self.config.minimum_listed_days)
+            })
+            .collect();
+        // 同区间一起查询；缓存层再拆出各股票真正缺失的部分交给数据源并发下载。
+        let mut groups: BTreeMap<Date, Vec<StockSymbol>> = BTreeMap::new();
+        for &symbol in &members {
+            let start = if let Some(window) = self.histories.get(&symbol) {
+                assert!(date >= window.end, "策略日期不能倒退");
+                if date == window.end {
+                    continue;
+                }
+                window.end.next_day().unwrap()
+            } else {
+                date.checked_sub(Duration::days(self.config.warmup_period() as i64 * 2))
+                    .unwrap_or(Date::MIN)
+                    .max(self.listed_dates[&symbol].max(self.config.history_start))
+            };
+            groups.entry(start).or_default().push(symbol);
+        }
+        let mut downloaded = BTreeMap::new();
+        for (start, symbols) in groups {
+            downloaded.extend(ctx.stocks_bars(&symbols, start, date).await);
+        }
         let mut ranked = Vec::new();
         for symbol in members {
-            let listed = if let Some(&listed) = self.listed_dates.get(&symbol) {
-                listed
-            } else {
-                let listed = ctx.stock_info(symbol).await.listed;
-                self.listed_dates.insert(symbol, listed);
-                listed
-            };
-            if (date - listed).whole_days() < i64::from(self.config.minimum_listed_days) {
-                continue;
-            }
-            self.update_history(ctx, symbol, listed).await;
+            let listed = self.listed_dates[&symbol];
+            self.update_history(
+                ctx,
+                symbol,
+                listed,
+                downloaded.remove(&symbol).unwrap_or_default(),
+            )
+            .await;
             let bars = &self.histories[&symbol].bars;
             if bars.len() < self.config.warmup_period()
                 || bars
