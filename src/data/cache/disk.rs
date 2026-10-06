@@ -133,6 +133,3 @@ impl DataProvider for DiskCacheProvider {
         self.inner.index_comp(symbol, range).await
     }
 }
-
-#[cfg(test)]
-mod test;

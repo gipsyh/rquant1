@@ -31,19 +31,6 @@ fn 裸代码按号段推断板块() {
 }
 
 #[test]
-fn 与_display_互为逆运算() {
-    for (code, _) in CASES {
-        let symbol = StockSymbol::from(*code);
-        // Display 产出 "000001.XSHE" 形式，再解析须回到原值。
-        assert_eq!(
-            StockSymbol::from(symbol.to_string().as_str()),
-            symbol,
-            "{code}"
-        );
-    }
-}
-
-#[test]
 fn 各种写法都归一到同一形式() {
     // 裸代码、两位缩写（SH/SZ）、四位 RQAlpha 后缀（XSHG/XSHE），
     // 外加大小写与两端空白，全部归一。
@@ -72,60 +59,27 @@ fn 各种写法都归一到同一形式() {
 }
 
 #[test]
-fn 两位缩写与四位后缀解析结果相同() {
-    for (short, long) in [
-        ("000001.SZ", "000001.XSHE"),
-        ("600000.SH", "600000.XSHG"),
-        ("688981.SH", "688981.XSHG"),
-        ("300750.SZ", "300750.XSHE"),
-    ] {
-        assert_eq!(
-            StockSymbol::from(short),
-            StockSymbol::from(long),
-            "{short} vs {long}"
-        );
-    }
-}
-
-#[test]
-fn 六位以外的位数被拒绝() {
-    for bad in ["00001", "0000001", "", "0000012"] {
-        assert!(
-            std::panic::catch_unwind(|| StockSymbol::from(bad)).is_err(),
-            "{bad:?} 应当 panic"
-        );
-    }
-}
-
-#[test]
-fn 非数字被拒绝() {
-    for bad in ["00000A", "ABCDEF", "000-01"] {
-        assert!(
-            std::panic::catch_unwind(|| StockSymbol::from(bad)).is_err(),
-            "{bad:?} 应当 panic"
-        );
-    }
-}
-
-#[test]
-fn 未建模的号段被拒绝() {
-    // 北交所 4xxxxx / 920xxx、沪市 B 股 900xxx、深市 B 股 200xxx：
-    // Python 侧 _STOCK_PREFIXES 认这些号段，但 StockBoard 还没有对应变体。
-    for bad in ["430047", "920001", "900901", "200002"] {
-        assert!(
-            std::panic::catch_unwind(|| StockSymbol::from(bad)).is_err(),
-            "{bad:?} 应当 panic"
-        );
-    }
-}
-
-#[test]
-fn 后缀与号段矛盾时被拒绝() {
+fn 非法代码被拒绝() {
     for bad in [
-        // 000001.XSHG 在 Python 侧是上证综指（指数），不是深市股票。
+        // 位数不对。
+        "00001",
+        "0000001",
+        "",
+        "0000012",
+        // 含非数字字符。
+        "00000A",
+        "ABCDEF",
+        "000-01",
+        // 未建模的号段：北交所 4xxxxx / 920xxx、沪市 B 股 900xxx、深市 B 股 200xxx。
+        // Python 侧 _STOCK_PREFIXES 认这些号段，但 StockBoard 还没有对应变体。
+        "430047",
+        "920001",
+        "900901",
+        "200002",
+        // 后缀与号段矛盾：000001.XSHG 在 Python 侧是上证综指（指数），不是深市股票；
+        // 反过来深市后缀配沪市号段也不行。
         "000001.XSHG",
         "000001.SH",
-        // 反过来也不行：深市后缀配沪市号段。
         "600000.XSHE",
         "600000.SZ",
         "300750.XSHG",

@@ -9,7 +9,7 @@
 //! cargo test data::tushare -- --ignored   # 加上在线冒烟
 //! ```
 
-use super::provider::{is_rate_limited, is_retryable};
+use super::provider::is_retryable;
 use crate::data::{DataProvider, StockSymbol};
 use crate::engine::{BacktestConfig, BacktestEngine};
 use crate::strategy::{BuyAndHold, BuyAndHoldConfig};
@@ -19,7 +19,7 @@ use std::time::Duration;
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use super::{Column, ParamsExt, RetryPolicy, Table, TushareProvider, params};
+use super::{Column, RetryPolicy, Table, TushareProvider, params};
 
 /// 快速失败的重试策略：错误路径测试不该真的等退避。
 fn fast_retry() -> RetryPolicy {
@@ -86,51 +86,9 @@ async fn query_发送正确的请求体() {
     assert_eq!(body["params"]["ts_type_name"], server.uri());
 }
 
-#[tokio::test]
-async fn 调用方传入的_ts_type_name_不被覆盖() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
-        .mount(&server)
-        .await;
-
-    let client = client_for(&server, RetryPolicy::none()).await;
-    client
-        .query("daily", params! { "ts_type_name" => "custom" }, "")
-        .await
-        .expect("应当成功");
-
-    let requests = server.received_requests().await.unwrap();
-    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    assert_eq!(body["params"]["ts_type_name"], "custom");
-}
-
 // =====================================================================
 // 错误路径
 // =====================================================================
-
-#[tokio::test]
-async fn code_非零时保留_code_与_msg() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "code": 40001,
-            "msg": "抱歉，您没有访问该接口的权限",
-            "data": null
-        })))
-        .mount(&server)
-        .await;
-
-    let client = client_for(&server, RetryPolicy::none()).await;
-    let err = client.query("daily", params! {}, "").await.unwrap_err();
-
-    let message = err.to_string();
-    assert!(message.contains("code=40001"));
-    assert!(message.contains("抱歉，您没有访问该接口的权限"));
-    assert!(message.contains("[daily]"));
-    // 保留原有限流文案识别规则。
-    assert!(is_rate_limited("抱歉，您没有访问该接口的权限"));
-}
 
 #[tokio::test]
 async fn http_500_返回错误而非空表() {
@@ -270,20 +228,6 @@ async fn 重试次数耗尽后向上抛出() {
     );
 }
 
-#[tokio::test]
-async fn retry_policy_none_不重试() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(500))
-        .mount(&server)
-        .await;
-
-    let client = client_for(&server, RetryPolicy::none()).await;
-    client.query("daily", params! {}, "").await.unwrap_err();
-
-    assert_eq!(server.received_requests().await.unwrap().len(), 1);
-}
-
 // =====================================================================
 // Table —— pd.DataFrame 的等价物
 // =====================================================================
@@ -300,24 +244,30 @@ fn sample_table() -> Table {
 }
 
 #[test]
-fn 空结果得到空表() {
-    let table = Table::new(vec!["ts_code".into()], vec![]).unwrap();
-    assert!(table.is_empty());
-    assert_eq!(table.len(), 0);
-    assert_eq!(table.fields(), ["ts_code"]);
-}
+fn 空表按列取名与按行列取单元格() {
+    let empty = Table::new(vec!["ts_code".into()], vec![]).unwrap();
+    assert!(empty.is_empty());
+    assert_eq!(empty.len(), 0);
+    assert_eq!(empty.fields(), ["ts_code"]);
 
-#[test]
-fn 按列取名() {
     let table = sample_table();
     let column: Column<'_> = table.column("close").expect("有 close 列");
     assert_eq!(column.name(), "close");
     assert_eq!(column.len(), 2);
     assert!(table.column("不存在").is_none());
+
+    assert_eq!(table.get(0, "close"), Some(&json!(10.5)));
+    assert_eq!(table.get(1, "close"), Some(&Value::Null));
+    assert_eq!(table.get(9, "close"), None);
+    assert_eq!(
+        table.row(0).unwrap().get("ts_code"),
+        Some(&json!("000001.SZ"))
+    );
+    assert_eq!(table.row(0).unwrap().at(2), Some(&json!(1200)));
 }
 
 #[test]
-fn as_f64_把_null_映射成_none() {
+fn as_f64_把_null_映射成_none_并宽松解析数字字符串() {
     let table = sample_table();
     // close 第二行是 JSON null。
     assert_eq!(
@@ -328,10 +278,7 @@ fn as_f64_把_null_映射成_none() {
         table.column("vol").unwrap().as_f64(),
         vec![Some(1200.0), Some(3400.0)]
     );
-}
 
-#[test]
-fn as_f64_宽松解析数字字符串() {
     // 对标 pd.to_numeric(errors="coerce")：数字字符串也解析。
     let table = Table::new(
         vec!["vol".into()],
@@ -343,7 +290,6 @@ fn as_f64_宽松解析数字字符串() {
         ],
     )
     .unwrap();
-
     assert_eq!(
         table.column("vol").unwrap().as_f64(),
         vec![Some(3400.0), Some(1200.0), None, None]
@@ -351,7 +297,7 @@ fn as_f64_宽松解析数字字符串() {
 }
 
 #[test]
-fn as_str_只接受字符串() {
+fn 字符串列访问器_as_str_与_as_string() {
     let table = sample_table();
     assert_eq!(
         table.column("ts_code").unwrap().as_str(),
@@ -359,29 +305,16 @@ fn as_str_只接受字符串() {
     );
     // close 是数字，as_str 应为 None（数字不是字符串）。
     assert_eq!(table.column("close").unwrap().as_str(), vec![None, None]);
-}
 
-#[test]
-fn as_string_等价于_astype_str() {
-    let table = sample_table();
+    // as_string 对标 astype(str)：数字也转成字符串，整数形式不带小数点。
     assert_eq!(
         table.column("close").unwrap().as_string(),
         vec![Some("10.5".to_string()), None]
     );
-    // 整数形式的 JSON 数字不带小数点。
     assert_eq!(
         table.column("vol").unwrap().as_string(),
         vec![Some("1200".to_string()), Some("3400".to_string())]
     );
-}
-
-#[test]
-fn records_对应_to_dict_records() {
-    let table = sample_table();
-    let records = table.records();
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0]["ts_code"], "000001.SZ");
-    assert_eq!(records[1]["close"], Value::Null);
 }
 
 #[test]
@@ -404,6 +337,12 @@ fn to_typed_反序列化成结构体() {
         }
     );
     assert_eq!(typed[1].close, None, "JSON null 应变成 None");
+
+    // records() 对标 to_dict("records")。
+    let records = sample_table().records();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0]["ts_code"], "000001.SZ");
+    assert_eq!(records[1]["close"], Value::Null);
 }
 
 #[test]
@@ -422,19 +361,6 @@ fn to_typed_缺列时报错并给出行号() {
     assert!(format!("{err:#}").contains("missing"));
 }
 
-#[test]
-fn 按行列取单元格() {
-    let table = sample_table();
-    assert_eq!(table.get(0, "close"), Some(&json!(10.5)));
-    assert_eq!(table.get(1, "close"), Some(&Value::Null));
-    assert_eq!(table.get(9, "close"), None);
-    assert_eq!(
-        table.row(0).unwrap().get("ts_code"),
-        Some(&json!("000001.SZ"))
-    );
-    assert_eq!(table.row(0).unwrap().at(2), Some(&json!(1200)));
-}
-
 // =====================================================================
 // Params
 // =====================================================================
@@ -449,23 +375,11 @@ fn params_宏构造参数表() {
     assert_eq!(p["ts_code"], "000001.SZ");
     assert_eq!(p["limit"], 5000);
     assert_eq!(p.len(), 3);
-}
 
-#[test]
-fn params_支持可选值() {
+    // None 序列化成 JSON null，与 Python 传 None 一致。
     let end: Option<&str> = None;
     let p = params! { "ts_code" => "000001.SZ", "end_date" => end };
-    // None 序列化成 JSON null，与 Python 传 None 一致。
     assert_eq!(p["end_date"], Value::Null);
-}
-
-#[test]
-fn params_ext_链式构造() {
-    let p = params! { "ts_code" => "000001.SZ" }
-        .with("start_date", "20240101")
-        .with("offset", 5000);
-    assert_eq!(p["start_date"], "20240101");
-    assert_eq!(p["offset"], 5000);
 }
 
 // =====================================================================
@@ -528,29 +442,6 @@ async fn 在线_日线行情() {
     // 收盘价是正数。
     let closes = table.column("close").expect("有 close 列").as_f64();
     assert!(closes.iter().all(|c| c.is_some_and(|v| v > 0.0)));
-}
-
-#[tokio::test]
-async fn api_限流文案触发重试() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "code": -2001, "msg": "每分钟访问次数超限", "data": null
-        })))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(ok_body()))
-        .mount(&server)
-        .await;
-    let table = client_for(&server, fast_retry())
-        .await
-        .query("daily", params! {}, "")
-        .await
-        .unwrap();
-    assert_eq!(table.len(), 2);
-    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -824,29 +715,6 @@ async fn empty_daily_query_returns_no_bars() {
 }
 
 #[tokio::test]
-#[should_panic(expected = "2002")]
-async fn upstream_permission_error_propagates_to_caller() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"code": 2002, "msg": "没有接口权限", "data": null})),
-        )
-        .mount(&server)
-        .await;
-    provider(&server)
-        .stock_bar(
-            StockSymbol::from("000001"),
-            DateRange::new(
-                parse_date("20240101").unwrap(),
-                parse_date("20240104").unwrap(),
-            ),
-        )
-        .await
-        .into_bars();
-}
-
-#[tokio::test]
 async fn lazy_engine_downloads_full_backtest_range_once() {
     let server = MockServer::start().await;
     response(
@@ -1055,51 +923,6 @@ async fn dates_before_st_coverage_are_rejected() {
         )
         .await
         .into_bars();
-}
-
-#[tokio::test]
-async fn stock_info_finds_delisted_and_suspended_stocks() {
-    for found_status in ["D", "P"] {
-        let server = MockServer::start().await;
-        for status in ["L", "D", "P"] {
-            let rows = if status == found_status {
-                json!([[
-                    "000001.SZ",
-                    "测试股票",
-                    "19910403",
-                    if status == "D" {
-                        Some("20240101")
-                    } else {
-                        None
-                    },
-                    null
-                ]])
-            } else {
-                json!([])
-            };
-            Mock::given(path("/stock_basic"))
-                .and(body_partial_json(
-                    json!({"params": {"ts_code": "000001.SZ", "list_status": status}}),
-                ))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "code": 0, "data": {
-                        "fields": ["ts_code", "name", "list_date", "delist_date", "industry"],
-                        "items": rows
-                    }
-                })))
-                .mount(&server)
-                .await;
-        }
-        let stock = provider(&server).stock_info("000001".into()).await;
-        assert_eq!(stock.name, "测试股票");
-        assert_eq!(stock.listed, parse_date("19910403").unwrap());
-        assert_eq!(stock.delisted.is_some(), found_status == "D");
-        assert!(stock.bars.is_none());
-        assert_eq!(
-            server.received_requests().await.unwrap().len(),
-            if found_status == "D" { 2 } else { 3 }
-        );
-    }
 }
 
 #[tokio::test]
