@@ -355,7 +355,7 @@ impl Strategy for LowTurnoverTrend {
                     .iter()
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
-                    .join(", ")
+                    .join(",")
             );
         }
         self.latest_selection = selection;
