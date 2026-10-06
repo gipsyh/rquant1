@@ -347,11 +347,15 @@ impl Strategy for LowTurnoverTrend {
         let orders = self.orders(ctx, &selection, allocation);
         if selection != self.latest_selection || old_regime != self.risk_on {
             log::info!(
-                "{} 地量趋势：中位数 {:.2}%，新增股票使用现金比例 {:.2}%，名单 {:?}",
+                "{} 地量趋势：中位数 {:.2}%，新增股票使用现金比例 {:.2}%，名单 {}",
                 ctx.date(),
                 trend * 100.0,
                 allocation * 100.0,
                 selection
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
         self.latest_selection = selection;
