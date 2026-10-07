@@ -68,7 +68,7 @@ fn create_run_directory(
         .collect();
     let name = if name.is_empty() { "strategy" } else { &name };
     let timestamp = timestamp.format(time::macros::format_description!(
-        "[year][month][day]-[hour][minute][second]"
+        "[month][day]-[hour][minute][second]"
     ))?;
     let prefix = format!("{name}-{timestamp}");
     // 原子创建目录；同秒启动的任务以序号区分，绝不复用已有结果目录。

@@ -58,11 +58,11 @@ cargo run -- bt --start 20250101 --end 20260928 --cash 1000000 \
   low-turnover-trend
 ```
 
-`report_output` 是报告根目录，默认 `report`。每次回测自动创建“策略名-时间戳”子目录，时间使用报告生成时的北京时间，格式为 `YYYYMMDD-HHMMSS`；同秒重名时追加序号，保留之前的结果。例如：
+`report_output` 是报告根目录，默认 `report`。每次回测自动创建“策略名-时间戳”子目录，时间使用报告生成时的北京时间，格式为 `MMDD-HHMMSS`；同秒重名时追加序号，保留之前的结果。例如：
 
 ```text
 report/
-└── low_turnover_trend-20261007-163000/
+└── low_turnover_trend-1007-163000/
     ├── result.json
     └── report.html
 ```
