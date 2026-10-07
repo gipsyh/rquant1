@@ -4,7 +4,7 @@ mod rbt;
 mod test;
 
 use crate::data::{DataProvider, IndexHistComp, Stock, StockBar, StockSymbol};
-use crate::report::{ReporterKind, default_output};
+use crate::report::ReporterKind;
 use crate::utils::{DateRange, latest_rqdate, parse_date};
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser};
@@ -48,8 +48,7 @@ pub struct BacktestConfig {
     #[serde(default)]
     pub reporter: ReporterKind,
     /// 报告根目录，每次创建“策略名-时间戳”子目录保存 JSON、HTML 等文件
-    #[arg(long, default_value_os_t = default_output(), value_name = "DIR")]
-    #[serde(default = "default_output")]
+    #[arg(long, default_value = "report", value_name = "DIR")]
     pub report_output: PathBuf,
 }
 

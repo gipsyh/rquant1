@@ -35,10 +35,6 @@ impl ReporterKind {
     }
 }
 
-pub fn default_output() -> PathBuf {
-    "report".into()
-}
-
 /// 每次回测独立保存；先写 JSON，后端生成失败时仍保留完整回测结果。
 pub fn save_report(result: &BacktestResult, reporter: &dyn RqReporter) -> Result<PathBuf> {
     let now = time::OffsetDateTime::now_utc().to_offset(time::macros::offset!(+8));
