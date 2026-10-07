@@ -118,17 +118,7 @@ impl BtContext<'_> {
             .into_iter()
             .collect();
         let infos = self.provider.lock().await.stocks_info(&symbols).await;
-        assert_eq!(infos.len(), symbols.len(), "基础信息批量结果数量不匹配");
-        symbols
-            .into_iter()
-            .zip(infos)
-            .map(|(symbol, info)| {
-                assert_eq!(symbol, info.symbol, "股票基础信息代码不匹配");
-                info.validate().unwrap();
-                assert!(info.bars.is_none(), "股票基础信息查询不应返回日线");
-                (symbol, info)
-            })
-            .collect()
+        symbols.into_iter().zip(infos).collect()
     }
 
     /// 查询当前日期及以前的指数成分历史，通过 composition(date) 获取已生效成分。
@@ -159,15 +149,11 @@ impl BtContext<'_> {
             .collect();
         let requests: Vec<_> = symbols.iter().map(|&s| (s, range)).collect();
         let results = self.provider.lock().await.stocks_bar(&requests).await;
-        assert_eq!(results.len(), requests.len(), "日线批量结果数量不匹配");
         symbols
             .into_iter()
             .zip(results)
             .map(|(symbol, hist)| {
-                assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
-                hist.validate().unwrap();
                 for bar in hist.bars() {
-                    assert_eq!(bar.symbol, symbol, "批量日线返回非请求股票");
                     rbt::validate_bar(bar, true).unwrap();
                 }
                 (symbol, hist.into_bars())

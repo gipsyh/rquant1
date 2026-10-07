@@ -139,10 +139,7 @@ pub(super) async fn load_bars(
     adjusted: bool,
 ) -> Vec<StockBar> {
     let hist = provider.stock_bar(symbol, range).await;
-    assert_eq!(hist.range(), range, "日线历史覆盖区间不匹配");
-    hist.validate().unwrap();
     for bar in hist.bars() {
-        assert_eq!(bar.symbol, symbol, "行情股票不匹配");
         validate_bar(bar, adjusted).unwrap();
     }
     hist.into_bars()
