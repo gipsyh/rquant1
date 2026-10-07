@@ -79,6 +79,11 @@ impl BacktestEngine {
                     .into_iter()
                     .next()
                 {
+                    if bar.delisting {
+                        unimplemented!(
+                            "持仓 {symbol} 于 {date} 处于退市整理期，引擎尚未实现该情形的估值与了结"
+                        );
+                    }
                     position.market_value = account.units[&symbol]
                         * bar.close
                         * factor(&bar, self.config.adjust_returns);
