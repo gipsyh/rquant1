@@ -88,6 +88,13 @@ impl BacktestEngine {
                         * bar.close
                         * factor(&bar, self.config.adjust_returns);
                 }
+                if let Some(delisted) = provider.stock_info(symbol).await.delisted
+                    && date >= delisted
+                {
+                    panic!(
+                        "持仓 {symbol} 于 {date} 已达到退市日 {delisted}，引擎尚未实现退市持仓的估值与了结"
+                    );
+                }
             }
             let market_value: f64 = account.positions.values().map(|p| p.market_value).sum();
             let equity = account.cash + market_value;
