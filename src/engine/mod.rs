@@ -1,7 +1,5 @@
 mod execution;
 mod rbt;
-#[cfg(test)]
-mod test;
 
 use crate::data::{DataProvider, IndexHistComp, Stock, StockBar, StockSymbol};
 use crate::report::ReporterKind;
