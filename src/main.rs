@@ -10,6 +10,7 @@ use rquant::{
     utils::DateRange,
 };
 use std::io::Write;
+use time::Date;
 
 fn logger_init() {
     env_logger::Builder::from_default_env()
@@ -47,14 +48,17 @@ async fn main() {
     }
 }
 
-async fn run_bt(backtest: BacktestConfig, strategy: StrategyConfig) -> anyhow::Result<()> {
-    let engine = BacktestEngine::new(backtest)?;
+async fn run_bt(bt_config: BacktestConfig, strategy: StrategyConfig) -> anyhow::Result<()> {
+    let engine = BacktestEngine::new(bt_config.clone())?;
     let reporter = engine.config.reporter.build();
     reporter.check_available()?;
     let strategy = strategy.build();
     let provider = Box::new(DiskCacheProvider::new(
         Box::new(TushareProvider::new()),
-        DateRange::new(engine.config.start, engine.config.end),
+        DateRange::new(
+            Date::from_ordinal_date(bt_config.start.year() - 1, 1)?,
+            bt_config.end,
+        ),
     ));
     let result = engine.run(provider, strategy).await?;
     let p = &result.performance;
