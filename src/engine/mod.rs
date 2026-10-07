@@ -62,6 +62,12 @@ impl BacktestConfig {
         if self.start > self.end {
             return Err(anyhow!("回测参数无效: 开始日期不能晚于截止日期"));
         }
+        let latest = latest_rqdate();
+        anyhow::ensure!(
+            self.end <= latest,
+            "回测参数无效: 截止日期 {} 不能晚于最新可取行情日期 {latest}",
+            self.end
+        );
         if self.slippage_bps != 0.0 {
             return Err(anyhow!("开盘价撮合仅支持 slippage_bps=0"));
         }
@@ -84,7 +90,8 @@ impl BacktestConfig {
     }
 }
 
-/// 收盘后上下文，可查询当日及以前日线；返回的订单在下一交易日开盘执行。
+/// 收盘后上下文；所有带日期的数据查询均在调用数据源前拒绝晚于回测当日的日期。
+/// 可查询当日及以前的历史；返回的订单在下一交易日开盘执行。
 pub struct BtContext<'a> {
     date: Date,
     pub init_cash: f64,
