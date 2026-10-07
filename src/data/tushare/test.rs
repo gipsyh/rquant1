@@ -26,7 +26,9 @@ fn fast_retry() -> RetryPolicy {
     RetryPolicy {
         max_retries: 3,
         base_delay: Duration::from_millis(1),
-        max_concurrency: 4,
+        // 限频路径同样不该真等冷却。
+        rate_limit_cooldown: Duration::from_millis(1),
+        rate_limit_max_retries: 3,
     }
 }
 
@@ -1168,80 +1170,74 @@ async fn stock_info_rejects_missing_duplicate_and_invalid_metadata() {
 }
 
 #[tokio::test]
-async fn stocks_bars_runs_four_downloads_and_respects_shared_http_limit() {
+async fn stocks_bars_runs_at_most_four_downloads() {
     use crate::data::MemCacheProvider;
-    // HTTP 上限高于 4 时仍只启动 4 只；低于 4 时继续服从共享信号量。
-    for http_limit in [8, 2] {
-        let server = MockServer::start().await;
-        Mock::given(path("/stock_basic"))
-            .respond_with(|request: &wiremock::Request| {
-                let body: Value = request.body_json().unwrap();
-                ResponseTemplate::new(200).set_body_json(json!({"code": 0, "data": {
-                    "fields": ["ts_code", "name", "list_date", "delist_date", "industry"],
-                    "items": body["params"]["ts_code"].as_str().unwrap().split(',')
-                        .map(|code| json!([code, "测试", "20000101", null, null])).collect::<Vec<_>>()
-                }}))
-            })
-            .mount(&server)
-            .await;
-        Mock::given(path("/daily"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_secs(10))
-                    .set_body_json(json!({"code": 0, "data": {"fields": [], "items": []}})),
-            )
-            .mount(&server)
-            .await;
-        let start = parse_date("20250101").unwrap();
-        let end = parse_date("20260928").unwrap();
-        let provider = TushareProvider::new()
-            .with_base_url(server.uri())
-            .with_retry(RetryPolicy {
-                max_concurrency: http_limit,
-                ..RetryPolicy::none()
-            });
-        // 穿过两层缓存，验证批量调用未退化成逐只加锁/下载。
-        let mut cache = MemCacheProvider::new(
-            Box::new(MemCacheProvider::new(
-                Box::new(provider),
-                DateRange::new(start, end),
-            )),
+    let server = MockServer::start().await;
+    Mock::given(path("/stock_basic"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = request.body_json().unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({"code": 0, "data": {
+                "fields": ["ts_code", "name", "list_date", "delist_date", "industry"],
+                "items": body["params"]["ts_code"].as_str().unwrap().split(',')
+                    .map(|code| json!([code, "测试", "20000101", null, null])).collect::<Vec<_>>()
+            }}))
+        })
+        .mount(&server)
+        .await;
+    Mock::given(path("/daily"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(Duration::from_secs(10))
+                .set_body_json(json!({"code": 0, "data": {"fields": [], "items": []}})),
+        )
+        .mount(&server)
+        .await;
+    let start = parse_date("20250101").unwrap();
+    let end = parse_date("20260928").unwrap();
+    let provider = TushareProvider::new()
+        .with_base_url(server.uri())
+        .with_retry(RetryPolicy::none());
+    // 穿过两层缓存，验证批量调用未退化成逐只加锁/下载。
+    let mut cache = MemCacheProvider::new(
+        Box::new(MemCacheProvider::new(
+            Box::new(provider),
             DateRange::new(start, end),
-        );
-        let requests: Vec<_> = (1..=6)
-            .map(|i| {
-                (
-                    StockSymbol::from(format!("{i:06}.SZ").as_str()),
-                    DateRange::new(start, start),
-                )
-            })
-            .collect();
-        let batch = cache.stocks_bar(&requests);
-        tokio::pin!(batch);
-        let expected = 4.min(http_limit);
-        tokio::select! {
-            _ = &mut batch => panic!("延迟响应不应提前完成"),
-            _ = async {
-                tokio::time::timeout(Duration::from_secs(3), async {
-                    loop {
-                        let received = server.received_requests().await.unwrap();
-                        if received.iter().filter(|r| r.url.path() == "/daily").count() >= expected { break; }
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                    }
-                }).await.expect("多个股票的下载没有同时启动");
-                tokio::time::sleep(Duration::from_millis(30)).await;
-                let received = server.received_requests().await.unwrap();
-                let daily: Vec<_> = received.iter().filter(|r| r.url.path() == "/daily").collect();
-                assert_eq!(daily.len(), expected);
-                for request in daily {
-                    let body: Value = request.body_json().unwrap();
-                    assert_eq!(body["params"]["start_date"], "20250101");
-                    assert_eq!(body["params"]["end_date"], "20260928");
+        )),
+        DateRange::new(start, end),
+    );
+    let requests: Vec<_> = (1..=6)
+        .map(|i| {
+            (
+                StockSymbol::from(format!("{i:06}.SZ").as_str()),
+                DateRange::new(start, start),
+            )
+        })
+        .collect();
+    let batch = cache.stocks_bar(&requests);
+    tokio::pin!(batch);
+    let expected = 4;
+    tokio::select! {
+        _ = &mut batch => panic!("延迟响应不应提前完成"),
+        _ = async {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let received = server.received_requests().await.unwrap();
+                    if received.iter().filter(|r| r.url.path() == "/daily").count() >= expected { break; }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-            } => {}
-        }
-        // 丢弃整批 future 会取消未完成下载，无后台任务继续写缓存。
+            }).await.expect("多个股票的下载没有同时启动");
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            let received = server.received_requests().await.unwrap();
+            let daily: Vec<_> = received.iter().filter(|r| r.url.path() == "/daily").collect();
+            assert_eq!(daily.len(), expected);
+            for request in daily {
+                let body: Value = request.body_json().unwrap();
+                assert_eq!(body["params"]["start_date"], "20250101");
+                assert_eq!(body["params"]["end_date"], "20260928");
+            }
+        } => {}
     }
+    // 丢弃整批 future 会取消未完成下载，无后台任务继续写缓存。
 }
 
 #[tokio::test]

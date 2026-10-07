@@ -4,7 +4,7 @@ Rust 多股票日频回测框架，保留 PyO3 Python 扩展。策略可以在�
 
 ## 快速运行
 
-需要 Rust 工具链和 Python 环境。当前仓库的 `.cargo/config.toml` 默认使用 `.venv/bin/python`；没有虚拟环境时先运行 `python3 -m venv .venv`，也可通过 `PYO3_PYTHON` 指定解释器。
+当前仓库的 `.cargo/config.toml` 默认使用 `.venv/bin/python`；
 
 ```bash
 cargo run -- bt --end 20241231 --cash 100000 \
@@ -157,7 +157,7 @@ for (stock, weight) in comp.weights() {
 }
 ```
 
-批量历史查询使用 `ctx.stocks_bars(&symbols, start, end).await`，返回 `BTreeMap<StockSymbol, Vec<StockBar>>`；重复代码合并，无行情股票保留空数组，返回原始价格，日期不得超过策略当日。`DataProvider::stocks_bars(&requests)` 的每项请求是 `(StockSymbol, DateRange)`，支持不同股票或缓存缺口使用不同区间，返回 `Vec<StockHistBar>`，每项与请求逐项对应，并保留完整请求区间（包括空行情区间）。数据源默认串行实现；Tushare 固定最多 4 个异步任务并发调用原有 `stock_bar`，不修改 HTTP API，也不拆分整段日线。任务共享连接池和已有 HTTP 并发限制；任一查询失败仍直接 panic。
+批量历史查询使用 `ctx.stocks_bars(&symbols, start, end).await`，返回 `BTreeMap<StockSymbol, Vec<StockBar>>`；重复代码合并，无行情股票保留空数组，返回原始价格，日期不得超过策略当日。`DataProvider::stocks_bars(&requests)` 的每项请求是 `(StockSymbol, DateRange)`，支持不同股票或缓存缺口使用不同区间，返回 `Vec<StockHistBar>`，每项与请求逐项对应，并保留完整请求区间（包括空行情区间）。数据源默认串行实现；Tushare 固定最多 4 个异步任务并发调用原有 `stock_bar`，不修改 HTTP API，也不拆分整段日线。任务共享连接池，批量下载并发仅由 `.buffered(4)` 控制；任一查询失败仍直接 panic。
 
 内存和磁盘缓存均透传批量查询：合并同一股票的请求，仅把未覆盖区间交给底层，首次访问仍预取整个回测区间。基础信息通过 `stocks_info` 批量查询和缓存：Tushare 将去重后的代码以逗号连接，一次请求 `stock_basic`；先查 `L`，只将仍缺失的代码继续按 `D`、`P` 顺序请求，不再逐股并发查询。返回顺序与输入一致，`stock_info` 复用单元素的 `stocks_info`；空输入不发请求，缺失、重复或非请求代码仍报错。地量趋势策略已使用批量基础信息和日线查询进行首次预热及后续追加；历史根数不足时，保留原有按股票向前补拉逻辑。
 
@@ -222,8 +222,9 @@ CLI 默认在 Tushare 外包装 `DiskCacheProvider::new(provider, start, end)`�
 
 - 使用 Tushare [`daily`](https://tushare.pro/document/2?doc_id=27)、[`adj_factor`](https://tushare.pro/document/2?doc_id=28)、[`trade_cal`](https://tushare.pro/document/2?doc_id=26)、[`stk_limit`](https://tushare.pro/document/2?doc_id=183)、[`stock_st`](https://tushare.pro/document/2?doc_id=397)。账号需要这些接口权限；错误会向上传递。仅拉取请求范围内的数据；每只股票的日线、复权因子、涨跌停价和 ST 状态优先按完整请求区间各查询一次，ST 响应触及上限时才拆分，最终日线按日期升序排列；交易日历仍按年查询；成交量从手转为股，成交额从千元转为元。未接入市值或自动限频调度，沿用客户端已有重试机制。
 - `TushareApi` 定义接口的 `MAX_ROWS` 和 `split_on_limit(&Params) -> (Params, Params)`，由 `tushare_apis!` 生成实现，具名方法和直接 `query` 共用规则：`daily`、`daily_basic`、`stock_basic` 各 6000 行，`stk_limit` 5800 行，`stock_st` 1000 行，`suspend_d` 5000 行，`index_basic` 8000 行。`index_weight` 保留项目现有 6000 行请求限制和截断保护，其文档未注明数字上限。`adj_factor`、`namechange`、`trade_cal`、`index_daily` 文档也未注明数字上限，显式配置为 `None`（不代表无限制）。各配置旁附官方文档链接。
-- 返回行数达到或超过上限时丢弃可能截断的父响应，调用拆分方法。当前仅 `stock_st` 支持按日期闭区间二分为 `[start, mid]` 和 `[mid + 1天, end]`，子请求顺序执行且可递归拆分，共享原有重试和 HTTP 并发限制。仅合并完整子响应，合并后的总行数可超过单次上限。不支持拆分的接口默认 panic；ST 区间缺失/无效、单日仍触顶，或携带 `trade_date`、`limit`、`offset` 时也直接 panic。子请求失败或字段不一致不返回部分数据。日线仍逐根检查对应复权因子，缺失即 panic。
+- 返回行数达到或超过上限时丢弃可能截断的父响应，调用拆分方法。当前仅 `stock_st` 支持按日期闭区间二分为 `[start, mid]` 和 `[mid + 1天, end]`，子请求顺序执行且可递归拆分，沿用原有重试策略。仅合并完整子响应，合并后的总行数可超过单次上限。不支持拆分的接口默认 panic；ST 区间缺失/无效、单日仍触顶，或携带 `trade_date`、`limit`、`offset` 时也直接 panic。子请求失败或字段不一致不返回部分数据。日线仍逐根检查对应复权因子，缺失即 panic。
 - `StockBar.st` 按交易日的 `stock_st` 名单填充，覆盖 ST 和 *ST；摘帽后为 `false`。每个非空日线区间按同一股票、日期范围查询 ST 状态，随日线缓存，空日线不额外查询。接口需要 3000 积分起，历史数据从 `20000101` 开始，因此 Tushare 日线查询不支持更早日期；权限不足或响应数据无效直接报错。
+- 遇到明确的分钟频次超限时，仅当前 worker 按 `rate_limit_cooldown`（默认 5 秒）冷却后重试，每次请求最多重试 `rate_limit_max_retries`（默认 20 次，累计等待约 100 秒，不含请求耗时），不暂停其他 worker。普通超时、连接错误及 HTTP 5xx 保留原来的指数退避，使用独立的 `max_retries` 计数；两类重试互不影响，`max_retries = 0` 只关闭普通重试，`rate_limit_max_retries = 0` 只关闭分钟限频重试。权限不足、每日额度耗尽不进入分钟限频重试。`RetryPolicy::none()` 把两类上限都归零，禁用全部重试。
 - 策略在收盘后查询包含当天的已完成日线，生成下一交易日开盘订单。内置 buy and hold 为每只目标股票分配 `初始资金 × allocation / 股票数` 的独立预算，第一次可成交时买入；未成交的股票次日重试，已成交的股票不再买入，也不在期末卖出。成交价为下一交易日原始开盘价。
 - 预算包含佣金，按 `lot_size` 向下取整，不允许融资。默认交易单位是简化的 100 股模型，尚未完整实现各板块的申报数量规则；例如科创板使用前需自行配置交易单位。费用在 `BacktestConfig` 中配置：买卖佣金均为 `max(notional × commission_rate, minimum_commission)`，默认万分之三、每笔最低 5 元；印花税仅卖出时收取 `notional × stamp_tax_rate`，默认万分之五，无最低收费。买入扣除成交额和佣金，卖出到账为成交额减佣金、印花税。税率在整个回测区间固定使用配置值；当前不计算过户费。
 - 开盘撮合只使用开盘价、涨跌停价及原始复权因子，不用当日 high、low、close 或全天成交量决定是否成交。无开盘行情、开盘价无效、缺少有效涨跌停价，或买入触及涨停／卖出触及跌停时失败。限价不满足开盘条件即失败，不等待盘中触价；不模拟盘口排队或成交量容量。日线完整性仍在历史查询和收盘估值时校验。

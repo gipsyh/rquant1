@@ -10,10 +10,8 @@ use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
-use std::sync::Arc;
 use std::time::Duration;
 use time::{Date, Month, macros::format_description};
-use tokio::sync::Semaphore;
 
 /// 与 Python `client.py:20` 的 `__http_url` 同址，但改用 HTTPS。
 ///
@@ -68,18 +66,21 @@ macro_rules! params {
     }};
 }
 
-/// 重试与并发策略。
+/// 请求重试策略。
 ///
-/// Python SDK 完全没有这两样东西。tushare 有按分钟的频率限制，裸客户端在批量拉取时
+/// Python SDK 没有自动重试。tushare 有按分钟的频率限制，裸客户端在批量拉取时
 /// 容易连环撞墙，因此这里默认开启；[`RetryPolicy::none`] 可退回 Python 的行为。
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
-    /// 首次失败后的最大重试次数（总请求数 = max_retries + 1）。
+    /// 普通瞬时错误的最大重试次数；0 只禁用普通瞬时错误的重试，
+    /// 不影响分钟限频重试（见 [`Self::rate_limit_max_retries`]）。
     pub max_retries: u32,
-    /// 指数退避的基准延时，第 n 次重试等待 `base_delay * 2^n`。
+    /// 普通瞬时错误的指数退避基准延时，第 n 次重试等待 `base_delay * 2^n`。
     pub base_delay: Duration,
-    /// 同时在途的请求数上限。
-    pub max_concurrency: usize,
+    /// 命中分钟限频后，每次重试前的固定冷却时长。
+    pub rate_limit_cooldown: Duration,
+    /// 分钟限频的最大重试次数。
+    pub rate_limit_max_retries: u32,
 }
 
 impl Default for RetryPolicy {
@@ -87,18 +88,21 @@ impl Default for RetryPolicy {
         Self {
             max_retries: 3,
             base_delay: Duration::from_millis(500),
-            max_concurrency: 8,
+            rate_limit_cooldown: Duration::from_secs(10),
+            rate_limit_max_retries: 20,
         }
     }
 }
 
 impl RetryPolicy {
-    /// 不重试、不限并发 —— 与 Python SDK 的行为一致。
+    /// 不自动重试 —— 与 Python SDK 的行为一致。
+    /// 两类重试上限都归零，普通错误与分钟限频都不重试。
     pub fn none() -> Self {
         Self {
             max_retries: 0,
             base_delay: Duration::ZERO,
-            max_concurrency: Semaphore::MAX_PERMITS,
+            rate_limit_cooldown: Duration::ZERO,
+            rate_limit_max_retries: 0,
         }
     }
 }
@@ -126,7 +130,6 @@ pub struct TushareProvider {
     base_url: String,
     http: reqwest::Client,
     retry: RetryPolicy,
-    gate: Arc<Semaphore>,
 }
 
 impl std::fmt::Debug for TushareProvider {
@@ -151,13 +154,11 @@ impl TushareProvider {
     }
 
     fn build(retry: RetryPolicy) -> Self {
-        let permits = retry.max_concurrency.clamp(1, Semaphore::MAX_PERMITS);
         Self {
             token: DEFAULT_TOKEN.to_string(),
             base_url: DEFAULT_BASE_URL.to_string(),
             http: http_client(DEFAULT_TIMEOUT),
             retry,
-            gate: Arc::new(Semaphore::new(permits)),
         }
     }
 
@@ -173,9 +174,6 @@ impl TushareProvider {
     }
 
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
-        self.gate = Arc::new(Semaphore::new(
-            retry.max_concurrency.clamp(1, Semaphore::MAX_PERMITS),
-        ));
         self.retry = retry;
         self
     }
@@ -198,7 +196,7 @@ impl TushareProvider {
             );
             let (left, right) = A::split_on_limit(&params);
             drop(table);
-            // 子请求顺序执行，共享 HTTP 信号量；Box::pin 为递归 future 提供间接层。
+            // 子请求顺序执行；Box::pin 为递归 future 提供间接层。
             let mut merged = Box::pin(self.query_api::<A>(left, fields)).await?;
             merged.append(Box::pin(self.query_api::<A>(right, fields)).await?)?;
             return Ok(merged);
@@ -223,19 +221,11 @@ impl TushareProvider {
         let url = format!("{}/{}", self.base_url, api_name);
 
         let mut attempt: u32 = 0;
+        let mut rate_limit_attempt: u32 = 0;
         loop {
-            let permit = self
-                .gate
-                .clone()
-                .acquire_owned()
-                .await
-                .context("并发信号量已关闭")?;
-
             let outcome = self.send(&url, &body, api_name).await;
-            // 先放行再退避，避免重试的等待时间占用并发额度。
-            drop(permit);
 
-            let (err, retryable) = match outcome {
+            let (err, rate_limited, retryable) = match outcome {
                 Ok(parsed) if parsed.code == 0 => {
                     let data = parsed.data.with_context(|| {
                         format!("响应结构异常: [{api_name}] code=0 但响应缺少 data 字段")
@@ -243,19 +233,39 @@ impl TushareProvider {
                     return Table::new(data.fields, data.items);
                 }
                 Ok(parsed) => {
-                    let retryable = is_rate_limited(&parsed.msg);
+                    let rate_limited = is_rate_limited(&parsed.msg);
                     let err = anyhow!(
                         "tushare [{api_name}] 返回 code={}: {}",
                         parsed.code,
                         parsed.msg
                     );
-                    (err, retryable)
+                    (err, rate_limited, false)
                 }
                 Err(err) => {
                     let retryable = is_retryable(&err);
-                    (err, retryable)
+                    (err, false, retryable)
                 }
             };
+            if rate_limited {
+                if rate_limit_attempt >= self.retry.rate_limit_max_retries {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "分钟限频重试 {} 次后仍失败",
+                            self.retry.rate_limit_max_retries
+                        )
+                    });
+                }
+                rate_limit_attempt += 1;
+                log::warn!(
+                    "tushare [{api_name}] 分钟限频，当前请求冷却 {} 秒后重试 ({}/{})",
+                    self.retry.rate_limit_cooldown.as_secs(),
+                    rate_limit_attempt,
+                    self.retry.rate_limit_max_retries,
+                );
+                // 仅等待当前 worker，其他任务仍可继续。
+                tokio::time::sleep(self.retry.rate_limit_cooldown).await;
+                continue;
+            }
             if attempt >= self.retry.max_retries || !retryable {
                 return Err(err);
             }
@@ -419,10 +429,23 @@ tushare_apis! {
     index_weight => IndexWeightApi(Some(6000)),
 }
 
-/// 服务端没有稳定的限流错误码，保留按文案识别的启发式规则。
+/// 仅识别明确的分钟频次限制，避免把权限不足、每日总额度当作短暂限频。
 pub(super) fn is_rate_limited(msg: &str) -> bool {
-    const NEEDLES: [&str; 6] = ["每分钟", "频率", "超限", "抱歉", "访问过快", "too many"];
-    NEEDLES.iter().any(|needle| msg.contains(needle))
+    let msg = msg.to_lowercase();
+    if ["每天", "每日", "当日", "当天", "per day", "daily limit"]
+        .iter()
+        .any(|word| msg.contains(word))
+    {
+        return false;
+    }
+    ["每分钟", "/分钟", "per minute"]
+        .iter()
+        .any(|word| msg.contains(word))
+        && [
+            "超限", "超过", "上限", "最多", "too many", "limit", "exceed",
+        ]
+        .iter()
+        .any(|word| msg.contains(word))
 }
 
 /// anyhow 保留底层 reqwest 错误，可按状态码和连接状态决定是否重试。
@@ -756,7 +779,7 @@ impl DataProvider for TushareProvider {
     }
 
     async fn stocks_bar(&mut self, requests: &[(StockSymbol, DateRange)]) -> Vec<StockHistBar> {
-        // 每项复用完整的单股票处理流程；共享 HTTP 连接池和请求信号量。
+        // 每项复用完整的单股票处理流程；共享 HTTP 连接池。
         // buffered 保持输入顺序，最多同时处理 4 项，失败沿用 stock_bar 的 panic。
         stream::iter(requests.iter().copied().map(|(symbol, range)| {
             let mut provider = self.clone();
