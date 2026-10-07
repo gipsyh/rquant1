@@ -8,7 +8,7 @@ use time::Date;
 /// 组合 `MemCacheProvider` 复用查询和区间补拉逻辑，增加跨回测日线与指数成分持久化。
 /// 交易日历仍由底层数据源提供。
 ///
-/// 构造时读取当前工作目录的 `rqdata.ron`，不存在则创建空缓存；
+/// 构造时读取当前工作目录的 `rqdata.bin`，不存在则创建空缓存；
 /// 每次 Drop 都重写文件。一个文件只供一个存活的实例使用，不合并并发写入。
 /// 数据源及其复权口径变化时，应先删除旧缓存。
 pub struct DiskCacheProvider {
@@ -17,7 +17,8 @@ pub struct DiskCacheProvider {
 }
 
 impl DiskCacheProvider {
-    const FILE_NAME: &str = "rqdata.ron";
+    const FILE_NAME: &str = "rqdata.bin";
+    const CONFIG: bincode::config::Configuration = bincode::config::standard();
 
     /// 首次访问未缓存股票或指数时预取 `range`，请求更宽时自动补拉。
     /// 缓存读取失败、损坏或数据不一致时 panic，保留原文件。
@@ -31,10 +32,17 @@ impl DiskCacheProvider {
 
     fn with_path(provider: Box<dyn DataProvider>, range: DateRange, path: PathBuf) -> Result<Self> {
         let mut inner = MemCacheProvider::new(provider, range);
-        let exists = match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let data: RqData = ron::from_str(&text)
-                    .with_context(|| format!("解析 {} 失败", path.display()))?;
+        let exists = match std::fs::read(&path) {
+            Ok(bytes) => {
+                let (data, len): (RqData, usize) =
+                    bincode::serde::decode_from_slice(&bytes, Self::CONFIG)
+                        .with_context(|| format!("解析 {} 失败", path.display()))?;
+                ensure!(
+                    len == bytes.len(),
+                    "解析 {} 失败: 文件末尾有 {} 字节多余数据",
+                    path.display(),
+                    bytes.len() - len
+                );
                 ensure!(
                     data.stock
                         .iter()
@@ -78,12 +86,11 @@ impl DiskCacheProvider {
     }
 
     fn save(&self) -> Result<()> {
-        let text = ron::ser::to_string_pretty(&self.inner.data, ron::ser::PrettyConfig::default())?;
+        let bytes = bincode::serde::encode_to_vec(&self.inner.data, Self::CONFIG)?;
         // 同目录临时文件，完整写入后再原子替换，避免写入失败截断旧缓存。
         let parent = self.path.parent().context("缓存路径没有父目录")?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
-        file.write_all(text.as_bytes())?;
-        file.write_all(b"\n")?;
+        file.write_all(&bytes)?;
         file.as_file().sync_all()?;
         file.persist(&self.path)?;
         Ok(())
