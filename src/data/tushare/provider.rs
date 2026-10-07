@@ -537,6 +537,77 @@ struct StStatus {
     trade_date: String,
 }
 
+#[derive(Deserialize)]
+struct NameChange {
+    ts_code: String,
+    name: String,
+    start_date: String,
+    end_date: Option<String>,
+    ann_date: Option<String>,
+    change_reason: Option<String>,
+}
+
+struct NamePeriod {
+    start: Date,
+    end: Option<Date>,
+    announced: Option<Date>,
+    delisting: bool,
+}
+
+fn name_periods(rows: Vec<NameChange>, code: &str) -> Result<Vec<NamePeriod>> {
+    let optional_date = |value: Option<String>| {
+        value
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| parse_date(&value))
+            .transpose()
+    };
+    let mut periods = Vec::with_capacity(rows.len());
+    for row in rows {
+        anyhow::ensure!(row.ts_code == code, "namechange 股票代码不匹配: {code}");
+        let name = row.name.trim();
+        anyhow::ensure!(!name.is_empty(), "namechange 名称为空: {code}");
+        let start = parse_date(&row.start_date)?;
+        let end = optional_date(row.end_date)?;
+        anyhow::ensure!(
+            end.is_none_or(|end| start <= end),
+            "namechange 生效区间无效: {code}"
+        );
+        periods.push(NamePeriod {
+            start,
+            end,
+            announced: optional_date(row.ann_date)?,
+            delisting: row
+                .change_reason
+                .as_deref()
+                .is_some_and(|reason| reason.trim() == "退市整理期")
+                || name.starts_with("退市")
+                || name.ends_with('退'),
+        });
+    }
+    periods.sort_by_key(|period| period.start);
+    anyhow::ensure!(
+        periods
+            .windows(2)
+            .all(|pair| { pair[0].end.is_some_and(|end| end < pair[1].start) }),
+        "namechange 生效区间重叠: {code}"
+    );
+    Ok(periods)
+}
+
+fn delisting_on(periods: &[NamePeriod], code: &str, date: Date) -> bool {
+    let index = periods.partition_point(|period| period.start <= date);
+    let period = index
+        .checked_sub(1)
+        .map(|index| &periods[index])
+        .filter(|period| period.end.is_none_or(|end| date <= end))
+        .unwrap_or_else(|| panic!("{code} {date} 缺少有效历史名称"));
+    assert!(
+        period.announced.is_none_or(|announced| announced <= date),
+        "{code} {date} 历史名称尚未公告"
+    );
+    period.delisting
+}
+
 fn insert_unique<T>(map: &mut BTreeMap<Date, T>, date: Date, value: T) {
     assert!(map.insert(date, value).is_none(), "重复日期 {date}");
 }
@@ -744,6 +815,19 @@ impl DataProvider for TushareProvider {
                 check_row(&row.ts_code, &code, date, range);
                 insert_unique(&mut st_dates, date, ());
             }
+            // 输入 start_date/end_date 过滤公告日期，不是名称生效区间。
+            // 按股票取完整历史，才能覆盖首根 bar 之前已生效的名称。
+            let names = self
+                .namechange(
+                    params! { "ts_code" => code.clone() },
+                    "ts_code,name,start_date,end_date,ann_date,change_reason",
+                )
+                .await
+                .unwrap_or_else(|err| panic!("namechange 查询失败: {err:#}"))
+                .to_typed::<NameChange>()
+                .unwrap_or_else(|err| panic!("namechange 数据无效: {err:#}"));
+            let names = name_periods(names, &code)
+                .unwrap_or_else(|err| panic!("namechange 数据无效: {err:#}"));
             for row in daily {
                 let date = parse_date(&row.trade_date).unwrap_or_else(|err| panic!("{err:#}"));
                 check_row(&row.ts_code, &code, date, range);
@@ -771,6 +855,7 @@ impl DataProvider for TushareProvider {
                         float_market_cap: None,
                         adjustment: Some(Adjustment::Raw(factor)),
                         st: st_dates.contains_key(&date),
+                        delisting: delisting_on(&names, &code, date),
                     },
                 );
             }

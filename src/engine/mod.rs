@@ -127,7 +127,7 @@ impl BtContext<'_> {
         self.provider.lock().await.index_comp(symbol, range).await
     }
 
-    /// 查询当日或历史日期是否有日线且非 ST；不保证下一交易日订单能成交。
+    /// 查询当日或历史日期是否有日线、非 ST 且不在退市整理期；不保证下一交易日订单能成交。
     pub async fn is_tradable(&self, symbol: StockSymbol, date: Date) -> bool {
         assert!(date <= self.date, "可交易状态查询不能包含未来数据");
         self.provider.lock().await.is_tradable(symbol, date).await

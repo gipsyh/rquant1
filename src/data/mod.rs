@@ -206,9 +206,10 @@ pub struct StockBar {
     /// `None` 表示未复权且无可用因子（如指数、因子缺失或无效）；
     /// 这与 `Some(Adjustment::Raw(_))` 不同，前者是因子不可得，后者是因子可得。
     pub adjustment: Option<Adjustment>,
-    /// 该交易日是否处于 ST/*ST 状态，随历史日期变化。
-    /// Tushare 数据源按 stock_st 当日名单填充；查询失败会报错。
+    /// 该交易日是否处于 ST/*ST 状态，随历史日期变化
     pub st: bool,
+    /// 该交易日是否处于退市整理期，随历史日期变化
+    pub delisting: bool,
 }
 
 impl StockBar {
@@ -272,7 +273,7 @@ impl StockHistBar {
         self.bars
     }
 
-    /// 已覆盖日期有日线且非 ST 才可交易；无日线返回 false，区间外查询 panic。
+    /// 已覆盖日期有日线、非 ST 且不在退市整理期才可选入；无日线返回 false，区间外查询 panic。
     /// 仅用于策略筛选，不判断成交量、涨跌停或订单能否成交。
     pub fn is_tradable(&self, date: Date) -> bool {
         assert!(
@@ -281,7 +282,7 @@ impl StockHistBar {
         );
         self.bars
             .binary_search_by_key(&date, |bar| bar.date)
-            .is_ok_and(|index| !self.bars[index].st)
+            .is_ok_and(|index| !self.bars[index].st && !self.bars[index].delisting)
     }
 
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
@@ -374,7 +375,7 @@ pub trait DataProvider: Send + Sync {
         results
     }
 
-    /// 查询指定日期是否有日线且非 ST
+    /// 查询指定日期是否有日线、非 ST 且不在退市整理期，供策略选股使用。
     async fn is_tradable(&mut self, symbol: StockSymbol, date: Date) -> bool;
 
     /// 查询指数名称，必须非空；查询失败或指数不存在时 panic。

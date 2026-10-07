@@ -483,11 +483,204 @@ fn provider(server: &MockServer) -> TushareProvider {
         .with_retry(RetryPolicy::none())
 }
 
+async fn name_fixture(server: &MockServer) {
+    Mock::given(path("/namechange"))
+        .respond_with(|request: &wiremock::Request| {
+            let body: Value = request.body_json().unwrap();
+            assert!(body["params"].get("start_date").is_none());
+            assert!(body["params"].get("end_date").is_none());
+            let code = &body["params"]["ts_code"];
+            ResponseTemplate::new(200).set_body_json(json!({
+                "code": 0, "data": {
+                    "fields": ["ts_code", "name", "start_date", "end_date", "ann_date", "change_reason"],
+                    "items": [[code, "普通股票", "19900101", null, "19900101", "其他"]]
+                }
+            }))
+        })
+        .mount(server).await;
+}
+
 async fn fixture(server: &MockServer, factors: Value) {
     fixture_with_st(server, factors, json!([])).await;
 }
 
+async fn historical_names(server: &MockServer, rows: Value) {
+    Mock::given(path("/namechange"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 0, "data": {
+                "fields": ["ts_code", "name", "start_date", "end_date", "ann_date", "change_reason"],
+                "items": rows
+            }
+        })))
+        .with_priority(1)
+        .mount(server).await;
+}
+
+#[tokio::test]
+async fn delisting_uses_effective_names_and_filters_non_st_bars() {
+    let server = MockServer::start().await;
+    fixture(
+        &server,
+        json!([["000001.SZ", "20240102", 2], ["000001.SZ", "20240104", 2]]),
+    )
+    .await;
+    // 返回倒序：第一个 bar 的名称在请求起点以前已生效。
+    historical_names(
+        &server,
+        json!([
+            [
+                "000001.SZ",
+                "测试退",
+                "20240104",
+                null,
+                "20231220",
+                "退市整理期"
+            ],
+            [
+                "000001.SZ",
+                "普通股票",
+                "19900101",
+                "20240103",
+                "19900101",
+                "其他"
+            ]
+        ]),
+    )
+    .await;
+    let hist = provider(&server)
+        .stock_bar(
+            StockSymbol::from("000001"),
+            DateRange::new(
+                parse_date("20240101").unwrap(),
+                parse_date("20240104").unwrap(),
+            ),
+        )
+        .await;
+    assert!(!hist.bars()[0].delisting);
+    assert!(hist.is_tradable(parse_date("20240102").unwrap()));
+    assert!(!hist.is_tradable(parse_date("20240103").unwrap()));
+    let bar = hist.bars()[1];
+    assert!(!bar.st);
+    assert!(bar.delisting);
+    assert!(!hist.is_tradable(bar.date));
+    assert!(bar.adjusted().delisting);
+    assert_eq!(bar.adjusted().close, bar.close * 2.0);
+    // 标识随历史持久化，而不是读取时重新请求名称。
+    let bytes = bincode::serde::encode_to_vec(&hist, bincode::config::standard()).unwrap();
+    let (decoded, _): (crate::data::StockHistBar, usize) =
+        bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+    assert!(decoded.bars()[1].delisting);
+    assert!(!decoded.is_tradable(bar.date));
+}
+
+#[tokio::test]
+async fn delisting_matches_before_first_bar_and_inclusive_end() {
+    for (name, reason) in [
+        ("测试退", None),
+        ("退市测试", None),
+        ("测试股票", Some("退市整理期")),
+    ] {
+        let server = MockServer::start().await;
+        fixture(
+            &server,
+            json!([["000001.SZ", "20240102", 2], ["000001.SZ", "20240104", 2]]),
+        )
+        .await;
+        historical_names(
+            &server,
+            json!([[
+                "000001.SZ",
+                name,
+                "20231220",
+                "20240104",
+                "20231219",
+                reason
+            ]]),
+        )
+        .await;
+        let hist = provider(&server)
+            .stock_bar(
+                StockSymbol::from("000001"),
+                DateRange::new(
+                    parse_date("20240101").unwrap(),
+                    parse_date("20240104").unwrap(),
+                ),
+            )
+            .await;
+        assert!(hist.bars().iter().all(|bar| bar.delisting));
+    }
+}
+
+#[tokio::test]
+async fn invalid_name_history_is_not_treated_as_non_delisting() {
+    for (rows, expected) in [
+        (json!([]), "缺少有效历史名称"),
+        (
+            json!([["000001.SZ", "测试", "20240103", null, null, null]]),
+            "缺少有效历史名称",
+        ),
+        (
+            json!([["000001.SZ", "测试", "20230101", "20240101", null, null]]),
+            "缺少有效历史名称",
+        ),
+        (
+            json!([["600000.SH", "测试", "20230101", null, null, null]]),
+            "股票代码不匹配",
+        ),
+        (
+            json!([["000001.SZ", " ", "20230101", null, null, null]]),
+            "名称为空",
+        ),
+        (
+            json!([["000001.SZ", "测试", "20240104", "20240102", null, null]]),
+            "生效区间无效",
+        ),
+        (
+            json!([
+                ["000001.SZ", "旧名", "20230101", "20240104", null, null],
+                ["000001.SZ", "新名", "20240104", null, null, null]
+            ]),
+            "生效区间重叠",
+        ),
+        (
+            json!([[
+                "000001.SZ",
+                "测试退",
+                "20230101",
+                null,
+                "20240103",
+                "退市整理期"
+            ]]),
+            "历史名称尚未公告",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        fixture(
+            &server,
+            json!([["000001.SZ", "20240102", 2], ["000001.SZ", "20240104", 2]]),
+        )
+        .await;
+        historical_names(&server, rows).await;
+        let err = tokio::spawn(async move {
+            provider(&server)
+                .stock_bar(
+                    StockSymbol::from("000001"),
+                    DateRange::new(
+                        parse_date("20240101").unwrap(),
+                        parse_date("20240104").unwrap(),
+                    ),
+                )
+                .await
+        })
+        .await
+        .expect_err("名称历史无效必须终止查询");
+        assert!(err.is_panic());
+        assert!(err.to_string().contains(expected), "{err}");
+    }
+}
+
 async fn fixture_with_st(server: &MockServer, factors: Value, st_rows: Value) {
+    name_fixture(server).await;
     response(server, "stock_st", &["ts_code", "trade_date"], st_rows).await;
     response(
         server,
@@ -584,6 +777,7 @@ async fn duplicate_dates_and_foreign_symbols_are_rejected() {
 #[tokio::test]
 async fn requests_full_stock_history_without_year_chunks() {
     let server = MockServer::start().await;
+    name_fixture(&server).await;
     for (api, fields, items) in [
         (
             "daily",
@@ -647,7 +841,7 @@ async fn requests_full_stock_history_without_year_chunks() {
     assert_eq!(bars[1].date, parse_date("20260928").unwrap());
     assert!(bars[0].st);
     assert!(!bars[1].st);
-    assert_eq!(server.received_requests().await.unwrap().len(), 4);
+    assert_eq!(server.received_requests().await.unwrap().len(), 5);
 }
 
 #[tokio::test]
@@ -932,6 +1126,7 @@ async fn empty_daily_query_returns_no_bars() {
 #[tokio::test]
 async fn lazy_engine_downloads_full_backtest_range_once() {
     let server = MockServer::start().await;
+    name_fixture(&server).await;
     response(
         &server,
         "stock_basic",
@@ -1003,12 +1198,12 @@ async fn lazy_engine_downloads_full_backtest_range_once() {
     let requests = server.received_requests().await.unwrap();
     assert_eq!(
         requests.len(),
-        6,
-        "calendar and stock info once, daily/factor/limit/st once each"
+        7,
+        "calendar and stock info once, daily/factor/limit/st/namechange once each"
     );
     for request in requests {
         let body: Value = serde_json::from_slice(&request.body).unwrap();
-        if body["api_name"] == "stock_basic" {
+        if body["api_name"] == "stock_basic" || body["api_name"] == "namechange" {
             assert_eq!(body["params"]["ts_code"], "000001.SZ");
             continue;
         }
@@ -1243,6 +1438,7 @@ async fn stocks_bars_runs_at_most_four_downloads() {
 #[tokio::test]
 async fn stocks_bars_preserves_request_order_and_empty_results() {
     let server = MockServer::start().await;
+    name_fixture(&server).await;
     for api in ["daily", "adj_factor", "stk_limit", "stock_st"] {
         Mock::given(path(format!("/{api}")))
             .respond_with(move |request: &wiremock::Request| {

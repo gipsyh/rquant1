@@ -340,6 +340,16 @@ impl BacktestEngine {
             .collect();
         skipped.sort_by(|a, b| (a.order_index, &a.symbol).cmp(&(b.order_index, &b.symbol)));
         for detail in &skipped {
+            log::warn!(
+                "订单被拒绝: signal_date={}, date={}, batch_index={}, order_index={}, symbol={}, side={}, reason={}",
+                detail.signal_date,
+                detail.date,
+                detail.batch_index,
+                detail.order_index,
+                detail.symbol,
+                detail.side,
+                detail.reason,
+            );
             strategy
                 .on_order_failed(&OrderFailure {
                     order: orders[detail.order_index].clone(),
