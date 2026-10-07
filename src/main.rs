@@ -62,11 +62,15 @@ async fn run_bt(bt_config: BacktestConfig, strategy: StrategyConfig) -> anyhow::
     ));
     let result = engine.run(provider, strategy).await?;
     let p = &result.performance;
+    let sharpe = p
+        .sharpe_ratio
+        .map_or_else(|| "N/A".to_string(), |value| format!("{value:.4}"));
     eprintln!(
-        "期末权益: {:.2} | 总收益: {:.2}% | 最大回撤: {:.2}% | 成交: {} 笔",
+        "期末权益: {:.2} | 总收益: {:.2}% | 最大回撤: {:.2}% | 夏普: {} | 成交: {} 笔",
         p.final_equity,
         p.total_return * 100.0,
         p.max_drawdown * 100.0,
+        sharpe,
         p.trade_count
     );
     let report_output = save_report(&result, &*reporter)?;

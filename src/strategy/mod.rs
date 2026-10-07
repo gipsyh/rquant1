@@ -1,7 +1,9 @@
+mod adaptive_rotation;
 mod buy_and_hold;
 mod low_turnover_trend;
 mod ma_cross;
 use crate::engine::{BtContext, Order, OrderFailure};
+pub use adaptive_rotation::{AdaptiveRotation, AdaptiveRotationConfig};
 pub use buy_and_hold::{BuyAndHold, BuyAndHoldConfig};
 use clap::Subcommand;
 pub use low_turnover_trend::{LowTurnoverTrend, LowTurnoverTrendConfig};
@@ -18,6 +20,9 @@ pub enum StrategyConfig {
     /// 按低成交额选股，趋势状态控制新增股票的现金买入比例
     #[command(alias = "low_turnover_trend")]
     LowTurnoverTrend(LowTurnoverTrendConfig),
+    /// 低成交额股票池反转轮动，趋势恶化时清仓
+    #[command(alias = "adaptive_rotation")]
+    AdaptiveRotation(AdaptiveRotationConfig),
 }
 
 impl StrategyConfig {
@@ -26,6 +31,7 @@ impl StrategyConfig {
             Self::BuyAndHold(config) => Box::new(BuyAndHold::new(config)),
             Self::MaCross(config) => Box::new(MaCross::new(config)),
             Self::LowTurnoverTrend(config) => Box::new(LowTurnoverTrend::new(config)),
+            Self::AdaptiveRotation(config) => Box::new(AdaptiveRotation::new(config)),
         }
     }
 }
