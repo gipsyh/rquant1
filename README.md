@@ -71,7 +71,7 @@ report/
 
 Python 解释器由 QuantStats 后端自动选择：优先使用当前目录的 `.venv/bin/python`（Windows 为 `.venv/Scripts/python.exe`），否则使用 `python3`。Python 适配脚本嵌入 Rust 二进制，无需部署源码目录。
 
-适配器直接使用 `equity_curve.daily_return`，保留首日及零收益交易日，按 252 个交易日年化、无风险利率 0、复利计算；暂不提供基准。HTML 顶部保留 Rust 引擎摘要，后续分析由 QuantStats 独立计算。QuantStats 的胜率基于收益周期，不代表平仓交易胜率。单日或全零收益回测只输出摘要和说明；空序列、日期乱序或无效收益明确报错。HTML 暂不展示成交与失败订单明细，这些数据完整保存在 JSON 中。
+适配器直接使用 `equity_curve.daily_return`，保留首日及零收益交易日，按 252 个交易日年化、无风险利率 0、复利计算；暂不提供基准。HTML 直接使用 QuantStats 生成的报告，不附加 Rust 引擎摘要。QuantStats 的胜率基于收益周期，不代表平仓交易胜率。单日或全零收益回测只输出无法生成图表的说明；空序列、日期乱序或无效收益明确报错。HTML 暂不展示成交与失败订单明细，这些数据完整保存在 JSON 中。
 
 回测前检查报告依赖；回测结束后先保存 JSON，再生成 HTML。HTML 生成失败时，错误信息包含已保存的 JSON 路径。库调用方可以通过 `save_report` 创建本次回测目录并保存全部报告，也可以将 `BacktestResult` 直接交给 `RqReporter::render` 在指定目录中渲染，引擎自身只计算结果。
 

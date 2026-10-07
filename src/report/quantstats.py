@@ -21,46 +21,13 @@ def returns_from_result(result, pd):
     return pd.Series(values, index=dates, dtype=float, name=result["strategy"])
 
 
-def engine_summary(result):
-    metrics = [
-        ("final_equity", "Final equity", ",.2f"),
-        ("total_return", "Total return", ".2%"),
-        ("annualized_return", "Annualized return", ".2%"),
-        ("max_drawdown", "Maximum drawdown", ".2%"),
-        ("annualized_volatility", "Annualized volatility", ".2%"),
-        ("sharpe_ratio", "Sharpe ratio", ".3f"),
-        ("total_commission", "Commission", ",.2f"),
-        ("total_stamp_tax", "Stamp tax", ",.2f"),
-        ("total_fees", "Total fees", ",.2f"),
-        ("trade_count", "Executed orders", ",d"),
-    ]
-    rows = []
-    for key, label, formatting in metrics:
-        value = result["performance"].get(key)
-        text = "N/A" if value is None else format(value, formatting)
-        rows.append(f"<tr><td>{label}</td><td>{text}</td></tr>")
-    valuation = "Corporate-action adjusted returns" if result["config"]["adjust_returns"] else "Raw price returns"
-    return (
-        '<section style="max-width:960px;margin:24px auto;font-family:sans-serif">'
-        '<h2>Rust engine summary</h2>'
-        f'<p>Strategy: {html.escape(result["strategy"])}</p>'
-        '<p>252 trading days/year; risk-free rate 0; returns include trading fees. '
-        'QuantStats independently calculates the analysis that follows; '
-        'its win rates describe return periods, not closed trades.</p>'
-        f'<p>Valuation: {valuation}</p>'
-        f'<table>{"".join(rows)}</table></section>'
-    )
-
-
 def generate(result, output, pd, qs):
     returns = returns_from_result(result, pd)
-    summary = engine_summary(result)
     # 全现金和单日回测没有足够的波动样本；不向 QuantStats 填入虚构收益。
     if len(returns) < 2 or (returns == 0).all():
         output.write_text(
             '<!doctype html><html><head><meta charset="utf-8"><title>Backtest report</title></head><body>'
-            + summary
-            + '<p style="text-align:center">QuantStats charts omitted: fewer than two observations '
+            '<p style="text-align:center">QuantStats charts omitted: fewer than two observations '
             'or all daily returns are zero.</p></body></html>',
             encoding="utf-8",
         )
@@ -76,9 +43,6 @@ def generate(result, output, pd, qs):
         strategy_title=html.escape(result["strategy"]),
         output=str(output),
     )
-    document = output.read_text(encoding="utf-8")
-    body = document.index(">", document.index("<body")) + 1
-    output.write_text(document[:body] + summary + document[body:], encoding="utf-8")
 
 
 def main():
