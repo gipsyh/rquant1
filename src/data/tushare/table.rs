@@ -17,6 +17,25 @@ pub struct Table {
 }
 
 impl Table {
+    /// 合并完整的子响应，不改变服务端行顺序；无字段的空响应视为空表。
+    pub(super) fn append(&mut self, other: Self) -> Result<()> {
+        if other.fields.is_empty() && other.rows.is_empty() {
+            return Ok(());
+        }
+        if self.fields.is_empty() && self.rows.is_empty() {
+            *self = other;
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.fields == other.fields,
+            "拆分响应字段不一致: {:?} 与 {:?}",
+            self.fields,
+            other.fields
+        );
+        self.rows.extend(other.rows);
+        Ok(())
+    }
+
     /// 组表，并校验每行长度与列数一致。
     ///
     /// tushare 正常总是返回等长行；长度不一致说明响应被截断或字段错位。

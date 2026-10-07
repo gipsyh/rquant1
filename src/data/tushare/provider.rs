@@ -185,14 +185,29 @@ impl TushareProvider {
         &self.base_url
     }
 
-    /// 调用任意 tushare 接口 —— 对应 Python `DataApi.query`。
-    ///
-    /// `fields` 传空串表示用服务端默认的全字段，对齐 Python 的 `fields=''`。
-    ///
-    /// 未提供具名方法的接口走这里，这正是 Python `__getattr__`
-    /// 提供的逃生通道。
-    /// 已配置上限的接口返回达到上限时直接 panic，避免接收可能截断的数据。
-    pub async fn query(&self, api_name: &str, params: Params, fields: &str) -> Result<Table> {
+    /// 先请求完整区间，触顶后仅重查两个子请求；不保留可能截断的父响应。
+    async fn query_api<A: TushareApi>(&self, params: Params, fields: &str) -> Result<Table> {
+        let table = self.query_once(A::NAME, params.clone(), fields).await?;
+        if let Some(limit) = A::MAX_ROWS
+            && table.len() >= limit
+        {
+            log::debug!(
+                "tushare [{}] 返回 {} 行，触及 {limit} 行上限，尝试拆分",
+                A::NAME,
+                table.len()
+            );
+            let (left, right) = A::split_on_limit(&params);
+            drop(table);
+            // 子请求顺序执行，共享 HTTP 信号量；Box::pin 为递归 future 提供间接层。
+            let mut merged = Box::pin(self.query_api::<A>(left, fields)).await?;
+            merged.append(Box::pin(self.query_api::<A>(right, fields)).await?)?;
+            return Ok(merged);
+        }
+        Ok(table)
+    }
+
+    /// 单个参数集合的请求，含 HTTP/限频重试，不处理行数上限。
+    async fn query_once(&self, api_name: &str, params: Params, fields: &str) -> Result<Table> {
         let mut params = params;
         // 对齐 client.py:34 —— Python 每次请求都会把 base_url 作为 ts_type_name 塞进 params。
         params
@@ -225,20 +240,6 @@ impl TushareProvider {
                     let data = parsed.data.with_context(|| {
                         format!("响应结构异常: [{api_name}] code=0 但响应缺少 data 字段")
                     })?;
-                    // 恰好达到上限也无法排除截断；不分页、不重试拆分。
-                    if let Some(max_rows) = Self::api_max_rows(api_name) {
-                        assert!(
-                            data.items.len() < max_rows,
-                            "tushare [{api_name}] symbol={}, start={}, end={} 返回 {} 行，达到或超过 {max_rows} 行上限，可能被截断",
-                            body["params"]
-                                .get("ts_code")
-                                .or_else(|| body["params"].get("index_code"))
-                                .unwrap_or(&Value::Null),
-                            body["params"]["start_date"],
-                            body["params"]["end_date"],
-                            data.items.len(),
-                        );
-                    }
                     return Table::new(data.fields, data.items);
                 }
                 Ok(parsed) => {
@@ -267,7 +268,7 @@ impl TushareProvider {
         }
     }
 
-    /// 单次 HTTP 请求及响应解析；API 状态和重试由 query 处理。
+    /// 单次 HTTP 请求及响应解析；API 状态和重试由 query_once 处理。
     async fn send(&self, url: &str, body: &Value, api_name: &str) -> Result<Response> {
         let response = self
             .http
@@ -291,15 +292,84 @@ impl TushareProvider {
     }
 }
 
+/// 接口的返回上限及超限拆分规则；None 表示上限未知。
+trait TushareApi {
+    const NAME: &'static str;
+    const MAX_ROWS: Option<usize>;
+
+    fn split_on_limit(params: &Params) -> (Params, Params) {
+        panic!(
+            "tushare [{}] symbol={}, start={}, end={} 达到或超过 {} 行上限，可能被截断；不支持拆分",
+            Self::NAME,
+            params
+                .get("ts_code")
+                .or_else(|| params.get("index_code"))
+                .unwrap_or(&Value::Null),
+            params.get("start_date").unwrap_or(&Value::Null),
+            params.get("end_date").unwrap_or(&Value::Null),
+            Self::MAX_ROWS.expect("仅已知上限的接口触发拆分"),
+        );
+    }
+}
+
+fn split_date_range(api_name: &str, params: &Params) -> (Params, Params) {
+    for key in ["trade_date", "limit", "offset"] {
+        assert!(
+            !params.contains_key(key),
+            "tushare [{api_name}] 含 {key} 参数，不能按日期区间拆分"
+        );
+    }
+    let date = |key: &str| {
+        let value = params
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("tushare [{api_name}] 拆分缺少日期参数 {key}"));
+        parse_date(value).unwrap_or_else(|err| panic!("tushare [{api_name}] 拆分日期无效: {err:#}"))
+    };
+    let (start, end) = (date("start_date"), date("end_date"));
+    assert!(
+        start < end,
+        "tushare [{api_name}] 日期区间不能继续拆分: {start}..={end}，拒绝返回可能截断的数据"
+    );
+    let mid = start + time::Duration::days((end - start).whole_days() / 2);
+    let mut left = params.clone();
+    let mut right = params.clone();
+    left.insert("end_date".into(), api_date(mid).into());
+    right.insert(
+        "start_date".into(),
+        api_date(mid.next_day().unwrap()).into(),
+    );
+    (left, right)
+}
+
 // 生成具名接口方法，等价于 Python 客户端 __getattr__ 的动态接口调用。
 macro_rules! tushare_apis {
-    ($($(#[$attr:meta])* $name:ident => $max_rows:expr),* $(,)?) => {
+    ($($(#[$attr:meta])* $name:ident => $api:ident($max_rows:expr $(, $split:path)?)),* $(,)?) => {
+        $(
+            struct $api;
+            impl TushareApi for $api {
+                const NAME: &'static str = stringify!($name);
+                const MAX_ROWS: Option<usize> = $max_rows;
+                $(fn split_on_limit(params: &Params) -> (Params, Params) {
+                    $split(Self::NAME, params)
+                })?
+            }
+        )*
         impl TushareProvider {
             // 具名接口和直接 query 共用同一份配置；None 表示未配置，非无限制。
             pub(super) fn api_max_rows(api_name: &str) -> Option<usize> {
                 match api_name {
-                    $(stringify!($name) => $max_rows,)*
+                    $(stringify!($name) => $api::MAX_ROWS,)*
                     _ => None,
+                }
+            }
+
+            /// 调用任意接口；已注册接口共用 trait 的上限和拆分规则。
+            /// `fields` 为空时由服务端选择字段。未知接口不假定其返回上限。
+            pub async fn query(&self, api_name: &str, params: Params, fields: &str) -> Result<Table> {
+                match api_name {
+                    $(stringify!($name) => self.query_api::<$api>(params, fields).await,)*
+                    _ => self.query_once(api_name, params, fields).await,
                 }
             }
 
@@ -322,30 +392,31 @@ macro_rules! tushare_apis {
 // 上限于 2026-10-06 核对官方文档；未注明数字的接口显式标为 None。
 tushare_apis! {
     /// [日线行情（股票）](https://tushare.pro/document/2?doc_id=27)，单次 6000 行。
-    daily => Some(6000),
+    daily => DailyApi(Some(6000)),
     /// [每日指标](https://tushare.pro/document/2?doc_id=32)，单次 6000 行。
-    daily_basic => Some(6000),
+    daily_basic => DailyBasicApi(Some(6000)),
     /// [复权因子](https://tushare.pro/document/2?doc_id=28)，文档未注明行数上限。
-    adj_factor => None,
+    adj_factor => AdjFactorApi(None),
     /// [每日涨跌停价格](https://tushare.pro/document/2?doc_id=183)，单次 5800 行。
-    stk_limit => Some(5800),
+    stk_limit => StkLimitApi(Some(5800)),
     /// [股票基础信息](https://tushare.pro/document/2?doc_id=25)，单次 6000 行。
-    stock_basic => Some(6000),
+    stock_basic => StockBasicApi(Some(6000)),
     /// [历史每日 ST/*ST 股票列表](https://tushare.pro/document/2?doc_id=397)，单次 1000 行。
-    stock_st => Some(1000),
+    /// 触顶后按日期闭区间二分，直到每次响应都小于上限。
+    stock_st => StockStApi(Some(1000), split_date_range),
     /// [股票曾用名](https://tushare.pro/document/2?doc_id=100)，文档未注明行数上限。
-    namechange => None,
+    namechange => NameChangeApi(None),
     /// [每日停复牌信息](https://tushare.pro/document/2?doc_id=214)，单次 5000 行。
-    suspend_d => Some(5000),
+    suspend_d => SuspendDailyApi(Some(5000)),
     /// [交易日历](https://tushare.pro/document/2?doc_id=26)，文档未注明行数上限。
-    trade_cal => None,
+    trade_cal => TradeCalApi(None),
     /// [指数基础信息](https://tushare.pro/document/2?doc_id=94)，单次 8000 行。
-    index_basic => Some(8000),
+    index_basic => IndexBasicApi(Some(8000)),
     /// [指数日线行情](https://tushare.pro/document/2?doc_id=95)，文档未注明行数上限。
-    index_daily => None,
+    index_daily => IndexDailyApi(None),
     /// [指数成分和权重](https://tushare.pro/document/2?doc_id=96)，文档未注明行数上限。
     /// 保留项目现有的 6000 行请求限制和截断保护，并非已核实的官方上限。
-    index_weight => Some(6000),
+    index_weight => IndexWeightApi(Some(6000)),
 }
 
 /// 服务端没有稳定的限流错误码，保留按文案识别的启发式规则。

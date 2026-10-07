@@ -655,7 +655,6 @@ async fn row_limits_panic_at_boundary_without_retry_or_pagination() {
         ("daily_basic", 6000),
         ("stk_limit", 5800),
         ("stock_basic", 6000),
-        ("stock_st", 1000),
         ("suspend_d", 5000),
         ("index_basic", 8000),
         ("index_weight", 6000),
@@ -696,6 +695,220 @@ async fn row_limits_panic_at_boundary_without_retry_or_pagination() {
             assert_eq!(server.received_requests().await.unwrap().len(), 1);
         }
     }
+}
+
+#[tokio::test]
+async fn stock_st_splits_only_at_limit_and_merges_complete_history() {
+    use std::collections::BTreeSet;
+    use time::{Duration as Days, macros::date};
+
+    for count in [0, 999, 1000, 2001] {
+        let server = MockServer::start().await;
+        let start = date!(2019 - 01 - 01);
+        let end = start + Days::days((count.max(1) - 1) as i64);
+        let api_date = |d: time::Date| d.to_string().replace('-', "");
+        Mock::given(path("/stock_st"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                assert_eq!(body["fields"], "ts_code,trade_date");
+                assert_eq!(body["params"]["ts_code"], "002005.SZ");
+                assert_eq!(body["params"]["custom"], "preserved");
+                let first = parse_date(body["params"]["start_date"].as_str().unwrap()).unwrap();
+                let last = parse_date(body["params"]["end_date"].as_str().unwrap()).unwrap();
+                let rows: Vec<_> = (0..count)
+                    .rev()
+                    .map(|i| start + Days::days(i as i64))
+                    .filter(|date| *date >= first && *date <= last)
+                    .take(1000)
+                    .map(|date| json!(["002005.SZ", api_date(date)]))
+                    .collect();
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "code": 0, "data": {"fields": ["ts_code", "trade_date"], "items": rows}
+                }))
+            })
+            .mount(&server)
+            .await;
+        let provider = client_for(&server, fast_retry()).await;
+        let params = params! {
+            "ts_code" => "002005.SZ", "start_date" => api_date(start),
+            "end_date" => api_date(end), "custom" => "preserved",
+        };
+        for direct in [false, true] {
+            let table = if direct {
+                provider
+                    .query("stock_st", params.clone(), "ts_code,trade_date")
+                    .await
+            } else {
+                provider
+                    .stock_st(params.clone(), "ts_code,trade_date")
+                    .await
+            }
+            .unwrap();
+            assert_eq!(table.len(), count);
+            let actual: BTreeSet<_> = table
+                .column("trade_date")
+                .unwrap()
+                .as_str()
+                .into_iter()
+                .map(|v| v.unwrap().to_owned())
+                .collect();
+            let expected: BTreeSet<_> = (0..count)
+                .map(|i| api_date(start + Days::days(i as i64)))
+                .collect();
+            assert_eq!(actual, expected, "拆分边界不得遗漏或重复");
+        }
+        let expected_calls = match count {
+            0 | 999 => 1,
+            1000 => 3,
+            2001 => 7,
+            _ => unreachable!(),
+        };
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            expected_calls * 2
+        );
+    }
+}
+
+#[tokio::test]
+async fn stock_st_panics_when_date_range_cannot_be_split() {
+    for (extra, expected) in [
+        (json!({}), "缺少日期参数"),
+        (
+            json!({"start_date": "bad", "end_date": "20240102"}),
+            "日期无效",
+        ),
+        (
+            json!({"start_date": "20240101", "end_date": "20240101"}),
+            "不能继续拆分",
+        ),
+        (
+            json!({"start_date": "20240102", "end_date": "20240101"}),
+            "不能继续拆分",
+        ),
+        (json!({"trade_date": "20240101"}), "含 trade_date"),
+        (json!({"limit": 1000}), "含 limit"),
+        (json!({"offset": 0}), "含 offset"),
+    ] {
+        let server = MockServer::start().await;
+        response(
+            &server,
+            "stock_st",
+            &["ts_code"],
+            json!(vec![vec!["002005.SZ"]; 1000]),
+        )
+        .await;
+        let provider = client_for(&server, fast_retry()).await;
+        let error = tokio::spawn(async move {
+            provider
+                .stock_st(extra.as_object().unwrap().clone(), "ts_code")
+                .await
+        })
+        .await
+        .unwrap_err();
+        assert!(error.is_panic());
+        assert!(error.to_string().contains(expected), "{error}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn stock_st_does_not_return_partial_history_on_child_failure() {
+    for inconsistent_fields in [false, true] {
+        let server = MockServer::start().await;
+        Mock::given(path("/stock_st"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                let first = body["params"]["start_date"].as_str().unwrap();
+                let last = body["params"]["end_date"].as_str().unwrap();
+                let body = if first != last {
+                    json!({"code": 0, "data": {"fields": ["trade_date"], "items": vec![vec!["20240102"]; 1000]}})
+                } else if first == "20240101" {
+                    json!({"code": 0, "data": {"fields": ["trade_date"], "items": [["20240101"]]}})
+                } else if inconsistent_fields {
+                    json!({"code": 0, "data": {"fields": ["wrong_field"], "items": [["20240102"]]}})
+                } else {
+                    json!({"code": 2002, "msg": "没有接口权限"})
+                };
+                ResponseTemplate::new(200).set_body_json(body)
+            }).mount(&server).await;
+        let error = client_for(&server, fast_retry())
+            .await
+            .stock_st(
+                params! {"start_date" => "20240101", "end_date" => "20240102"},
+                "trade_date",
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(if inconsistent_fields {
+            "字段不一致"
+        } else {
+            "没有接口权限"
+        }));
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    }
+}
+
+#[test]
+fn split_tables_allow_fieldless_empty_responses() {
+    let data = Table::new(vec!["date".into()], vec![vec![json!("20240101")]]).unwrap();
+    let mut merged = Table::new(vec![], vec![]).unwrap();
+    merged.append(data.clone()).unwrap();
+    merged.append(Table::new(vec![], vec![]).unwrap()).unwrap();
+    assert_eq!(merged, data);
+}
+
+#[tokio::test]
+#[ignore = "会真实联网并消耗接口额度"]
+async fn online_stock_st_long_range_matches_yearly_queries() {
+    use std::collections::BTreeSet;
+    let provider = TushareProvider::new();
+    let table = provider
+        .stock_st(
+            params! {
+                "ts_code" => "002005.SZ", "start_date" => "20190101", "end_date" => "20260928",
+            },
+            "ts_code,trade_date",
+        )
+        .await
+        .unwrap();
+    let dates = |table: &Table| -> BTreeSet<String> {
+        assert!(
+            table
+                .column("ts_code")
+                .unwrap()
+                .as_str()
+                .iter()
+                .all(|s| *s == Some("002005.SZ"))
+        );
+        table
+            .column("trade_date")
+            .unwrap()
+            .as_str()
+            .into_iter()
+            .map(|v| v.unwrap().to_owned())
+            .collect()
+    };
+    let actual = dates(&table);
+    assert_eq!(table.len(), actual.len(), "存在重复的 ST 日期");
+    assert!(
+        table.len() >= 1000,
+        "此次在线样本未触及上限，无法验证拆分恢复"
+    );
+    let mut expected = BTreeSet::new();
+    for year in 2019..=2026 {
+        let rows = provider.stock_st(params! {
+            "ts_code" => "002005.SZ", "start_date" => format!("{year}0101"),
+            "end_date" => if year == 2026 { "20260928".into() } else { format!("{year}1231") },
+        }, "ts_code,trade_date").await.unwrap();
+        assert!(rows.len() < 1000);
+        expected.extend(dates(&rows));
+    }
+    assert_eq!(actual, expected);
+    eprintln!(
+        "002005.SZ / 20190101..=20260928: {} 条 ST 记录，与逐年独立查询一致",
+        table.len()
+    );
 }
 
 #[tokio::test]
