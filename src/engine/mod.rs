@@ -4,15 +4,16 @@ mod rbt;
 mod test;
 
 use crate::data::{DataProvider, IndexHistComp, Stock, StockBar, StockSymbol};
+use crate::report::{ReporterKind, default_output};
 use crate::utils::{DateRange, latest_rqdate, parse_date};
 use anyhow::{Result, anyhow};
 use clap::{ArgAction, Parser};
 pub use rbt::BacktestEngine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 use time::Date;
 
-#[derive(Parser, Clone, Debug, Serialize)]
+#[derive(Parser, Clone, Debug, Serialize, Deserialize)]
 pub struct BacktestConfig {
     /// 开始日期（含），支持 YYYYMMDD 或 YYYY-MM-DD
     #[arg(long, default_value = "20200101", value_parser = parse_date)]
@@ -42,9 +43,14 @@ pub struct BacktestConfig {
     /// 这是复权收益模型，不是现金分红、税费和实际送转股的逐笔记账。
     #[arg(long = "raw", action = ArgAction::SetFalse, help = "仅计算价格收益，不使用复权因子估值")]
     pub adjust_returns: bool,
-    /// 将完整 JSON 报告写入文件；不指定则打印到 stdout
-    #[arg(long, value_name = "PATH")]
-    pub output: Option<PathBuf>,
+    /// 回测完成后使用的报告后端
+    #[arg(long, value_enum, default_value = "quantstats")]
+    #[serde(default)]
+    pub reporter: ReporterKind,
+    /// 报告根目录，每次创建“策略名-时间戳”子目录保存 JSON、HTML 等文件
+    #[arg(long, default_value_os_t = default_output(), value_name = "DIR")]
+    #[serde(default = "default_output")]
+    pub report_output: PathBuf,
 }
 
 impl Default for BacktestConfig {
@@ -217,14 +223,14 @@ pub struct OrderFailure {
 }
 
 /// 按股票独立记录持仓，估值口径由 BacktestConfig::adjust_returns 决定。
-#[derive(Clone, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Position {
     /// 当前未平仓的买入股数；复权模式下不代表公司行动后的实际股数。
     pub purchased_shares: u64,
     pub market_value: f64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Trade {
     pub signal_date: Date,
     pub date: Date,
@@ -232,7 +238,7 @@ pub struct Trade {
     pub batch_index: usize,
     pub order_index: usize,
     pub symbol: String,
-    pub side: &'static str,
+    pub side: String,
     pub shares: u64,
     pub price: f64,
     /// 成交金额。复权模式卖出按收益单位结算，可能不等于 shares × price。
@@ -244,7 +250,7 @@ pub struct Trade {
     pub cash_after: f64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EquityPoint {
     pub date: Date,
     pub cash: f64,
@@ -257,18 +263,18 @@ pub struct EquityPoint {
     pub drawdown: f64,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SkippedOrder {
     pub signal_date: Date,
     pub date: Date,
     pub batch_index: usize,
     pub order_index: usize,
     pub symbol: String,
-    pub side: &'static str,
+    pub side: String,
     pub reason: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Performance {
     pub final_equity: f64,
     pub total_return: f64,
@@ -286,7 +292,7 @@ pub struct Performance {
     pub trade_count: usize,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BacktestResult {
     pub strategy: String,
     pub symbols: Vec<String>,

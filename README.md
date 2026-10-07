@@ -7,15 +7,15 @@ Rust 多股票日频回测框架，保留 PyO3 Python 扩展。策略可以在�
 需要 Rust 工具链和 Python 环境。当前仓库的 `.cargo/config.toml` 默认使用 `.venv/bin/python`；没有虚拟环境时先运行 `python3 -m venv .venv`，也可通过 `PYO3_PYTHON` 指定解释器。
 
 ```bash
-cargo run -- bt --end 20241231 --cash 100000 --output result.json \
+cargo run -- bt --end 20241231 --cash 100000 \
   buy-and-hold --symbol 000001.SZ --allocation 1.0
 
 # 多股票：也可重复指定 --symbol
-cargo run -- bt --start 20240101 --end 20240131 --output portfolio.json \
+cargo run -- bt --start 20240101 --end 20240131 \
   buy-and-hold --symbol 000001.SZ,600000.SH
 
 # 双均线：5 日 SMA 上穿 20 日 SMA 买入，下穿清仓
-cargo run -- bt --start 20240101 --end 20241231 --cash 100000 --output ma-result.json \
+cargo run -- bt --start 20240101 --end 20241231 --cash 100000 \
   ma-cross --symbol 000001.SZ,600000.SH --short 5 --long 20 --allocation 0.8
 
 cargo run -- --help
@@ -31,7 +31,7 @@ cargo run -- bt low-turnover-trend --help
 
 `--symbol` 是内置策略的目标参数，不是通用策略接口的股票池约束。自定义策略无需提供目标列表，可在回调中决定查询和交易任意股票。
 
-股票代码支持 `000001`、`000001.SZ`、`000001.XSHE` 等现有沪深股票编码；日期支持 `YYYYMMDD` 和 `YYYY-MM-DD`。代码、日期和参数错误会在请求前报错。未指定 `--output` 时，stdout 输出完整 JSON，stderr 输出摘要。
+股票代码支持 `000001`、`000001.SZ`、`000001.XSHE` 等现有沪深股票编码；日期支持 `YYYYMMDD` 和 `YYYY-MM-DD`。代码、日期和参数错误会在请求前报错。JSON 和 HTML 自动保存到本次回测的报告子目录，终端输出摘要和目录路径。
 
 可配置 `--commission`（默认 0.0003，即万分之三，买卖双向收取）、`--min-commission`（每笔最低佣金，默认 5 元）、`--stamp-tax`（默认 0.0005，即万分之五，仅卖出收取）、`--slippage-bps`（保留参数，仅支持 0，严格按开盘原价成交）、`--lot-size`（默认 100）。`--raw` 仅关闭账户的复权收益估值，均线信号仍使用复权收盘价。资金不足、停牌或涨停导致没有成交时，报告保留全现金净值和 `skipped_orders`，不会伪造交易。
 
@@ -40,6 +40,44 @@ cargo run -- bt low-turnover-trend --help
 ```bash
 RUST_LOG=rquant=debug cargo run -- bt --start 20240101 --end 20240131 \
   buy-and-hold --symbol 000001.SZ
+```
+
+## QuantStats 报告
+
+`BacktestResult` 是回测和展示后端之间的统一数据结构，`RqReporter` 是报告接口。`BacktestConfig.reporter` 指定后端，默认 `ReporterKind::QuantStats`。运行 `bt` 会在回测完成后保存 JSON，并调用 Python 生成 HTML；报告后端不查询行情，也不重新运行策略。
+
+```bash
+uv sync --locked
+
+# 默认使用 QuantStats，在 report 下创建本次回测的子目录
+cargo run -- bt --start 20250101 --end 20260928 --cash 1000000 low-turnover-trend
+
+# 自定义输出路径；报告参数属于 BacktestConfig，放在策略名称之前
+cargo run -- bt --start 20250101 --end 20260928 --cash 1000000 \
+  --reporter quantstats --report-output reports \
+  low-turnover-trend
+```
+
+`report_output` 是报告根目录，默认 `report`。每次回测自动创建“策略名-时间戳”子目录，时间使用报告生成时的北京时间，格式为 `YYYYMMDD-HHMMSS`；同秒重名时追加序号，保留之前的结果。例如：
+
+```text
+report/
+└── low_turnover_trend-20261007-163000/
+    ├── result.json
+    └── report.html
+```
+
+`result.json` 包含完整的 `BacktestResult`，HTML 及后续其他报告文件保存在同一子目录中，无需单独指定 JSON 路径。
+
+Python 解释器由 QuantStats 后端自动选择：优先使用当前目录的 `.venv/bin/python`（Windows 为 `.venv/Scripts/python.exe`），否则使用 `python3`。Python 适配脚本嵌入 Rust 二进制，无需部署源码目录。
+
+适配器直接使用 `equity_curve.daily_return`，保留首日及零收益交易日，按 252 个交易日年化、无风险利率 0、复利计算；暂不提供基准。HTML 顶部保留 Rust 引擎摘要，后续分析由 QuantStats 独立计算。QuantStats 的胜率基于收益周期，不代表平仓交易胜率。单日或全零收益回测只输出摘要和说明；空序列、日期乱序或无效收益明确报错。HTML 暂不展示成交与失败订单明细，这些数据完整保存在 JSON 中。
+
+回测前检查报告依赖；回测结束后先保存 JSON，再生成 HTML。HTML 生成失败时，错误信息包含已保存的 JSON 路径。库调用方可以通过 `save_report` 创建本次回测目录并保存全部报告，也可以将 `BacktestResult` 直接交给 `RqReporter::render` 在指定目录中渲染，引擎自身只计算结果。
+
+```bash
+cargo test --lib
+uv run --locked python -m unittest discover -s tests -p test_report.py
 ```
 
 ## 双均线策略
@@ -55,7 +93,7 @@ Rust 侧使用 `StrategyConfig::MaCross(MaCrossConfig { symbols, short: 5, long:
 ## 地量趋势轮动策略
 
 ```bash
-cargo run -- bt --start 20191125 --end 20260928 --cash 1000000 --output low-turnover.json \
+cargo run -- bt --start 20191125 --end 20260928 --cash 1000000 \
   low-turnover-trend --symbol 399101.XSHE
 ```
 

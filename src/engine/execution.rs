@@ -94,13 +94,13 @@ impl BacktestEngine {
         let batch_cash = account.cash;
         let mut legs = Vec::new();
         let mut skipped = Vec::new();
-        let failure = |order_index, symbol: String, side, reason: String| SkippedOrder {
+        let failure = |order_index, symbol: String, side: &str, reason: String| SkippedOrder {
             signal_date,
             date,
             batch_index,
             order_index,
             symbol,
-            side,
+            side: side.into(),
             reason,
         };
         for (order_index, order) in orders.iter().enumerate() {
@@ -329,7 +329,7 @@ impl BacktestEngine {
                 batch_index,
                 order_index: fill.leg.order_index,
                 symbol: fill.leg.symbol.to_string(),
-                side: fill.leg.intent.side(),
+                side: fill.leg.intent.side().into(),
                 shares: fill.shares,
                 price: fill.price,
                 notional: fill.notional,

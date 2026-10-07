@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 pub mod data;
 pub mod engine;
+pub mod report;
 pub mod strategy;
 pub mod utils;
 

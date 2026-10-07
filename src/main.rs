@@ -2,10 +2,10 @@ mod config;
 
 use clap::Parser;
 use config::{Cli, Command};
-use env_logger::Target;
 use rquant::{
     data::{DiskCacheProvider, tushare::TushareProvider},
     engine::{BacktestConfig, BacktestEngine},
+    report::save_report,
     strategy::StrategyConfig,
     utils::DateRange,
 };
@@ -31,7 +31,6 @@ fn logger_init() {
             )
         })
         .format_target(false)
-        .target(Target::Stdout)
         .init();
 }
 
@@ -49,22 +48,16 @@ async fn main() {
 }
 
 async fn run_bt(backtest: BacktestConfig, strategy: StrategyConfig) -> anyhow::Result<()> {
-    let output = backtest.output.clone();
     let engine = BacktestEngine::new(backtest)?;
+    let reporter = engine.config.reporter.build();
+    reporter.check_available()?;
     let strategy = strategy.build();
     let provider = Box::new(DiskCacheProvider::new(
         Box::new(TushareProvider::new()),
         DateRange::new(engine.config.start, engine.config.end),
     ));
     let result = engine.run(provider, strategy).await?;
-    let json = serde_json::to_string_pretty(&result)?;
-    if let Some(output) = output {
-        std::fs::write(&output, json)?;
-        eprintln!("报告已写入 {}", output.display());
-    } else {
-        println!("{json}");
-    }
-    let p = result.performance;
+    let p = &result.performance;
     eprintln!(
         "期末权益: {:.2} | 总收益: {:.2}% | 最大回撤: {:.2}% | 成交: {} 笔",
         p.final_equity,
@@ -72,5 +65,7 @@ async fn run_bt(backtest: BacktestConfig, strategy: StrategyConfig) -> anyhow::R
         p.max_drawdown * 100.0,
         p.trade_count
     );
+    let report_output = save_report(&result, &*reporter)?;
+    eprintln!("报告已写入目录 {}", report_output.display());
     Ok(())
 }
