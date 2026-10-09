@@ -1,11 +1,13 @@
 mod adaptive_rotation;
 mod buy_and_hold;
+mod dynamic_rotation;
 mod low_turnover_trend;
 mod ma_cross;
 use crate::engine::{BtContext, Order, OrderFailure};
 pub use adaptive_rotation::{AdaptiveRotation, AdaptiveRotationConfig};
 pub use buy_and_hold::{BuyAndHold, BuyAndHoldConfig};
 use clap::Subcommand;
+pub use dynamic_rotation::{DynamicRotation, DynamicRotationConfig};
 pub use low_turnover_trend::{LowTurnoverTrend, LowTurnoverTrendConfig};
 pub use ma_cross::{MaCross, MaCrossConfig};
 
@@ -23,6 +25,9 @@ pub enum StrategyConfig {
     /// 低成交额股票池反转轮动，趋势恶化时清仓
     #[command(alias = "adaptive_rotation")]
     AdaptiveRotation(AdaptiveRotationConfig),
+    /// 自适应动态仓位轮动，结合过热退出与趋势强度动态头寸控制
+    #[command(alias = "dynamic_rotation")]
+    DynamicRotation(DynamicRotationConfig),
 }
 
 impl StrategyConfig {
@@ -32,6 +37,7 @@ impl StrategyConfig {
             Self::MaCross(config) => Box::new(MaCross::new(config)),
             Self::LowTurnoverTrend(config) => Box::new(LowTurnoverTrend::new(config)),
             Self::AdaptiveRotation(config) => Box::new(AdaptiveRotation::new(config)),
+            Self::DynamicRotation(config) => Box::new(DynamicRotation::new(config)),
         }
     }
 }
