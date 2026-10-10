@@ -52,8 +52,8 @@ impl std::str::FromStr for StockSymbol {
             "688" | "689" => StockBoard::ShStar,
             // 深市主板 000/001/002/003（002 原中小板，2021 年并入主板）
             "000" | "001" | "002" | "003" => StockBoard::SzMain,
-            // 创业板 300/301
-            "300" | "301" => StockBoard::SzChiNext,
+            // 创业板 300/301/302（含中航成飞 302132）
+            "300" | "301" | "302" => StockBoard::SzChiNext,
             other => {
                 return Err(anyhow::anyhow!(
                     "未知的股票号段 {other:?}（代码 {value:?}）"

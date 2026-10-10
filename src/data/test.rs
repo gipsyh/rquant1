@@ -19,6 +19,7 @@ const CASES: &[(&str, StockBoard)] = &[
     ("003816", StockBoard::SzMain),    // 中国广核
     ("300750", StockBoard::SzChiNext), // 宁德时代
     ("301029", StockBoard::SzChiNext), // 怡合达
+    ("302132", StockBoard::SzChiNext), // 中航成飞
 ];
 
 #[test]
@@ -48,6 +49,7 @@ fn 各种写法都归一到同一形式() {
         ("688981.sh", "688981.XSHG"),
         ("300750.SZ", "300750.XSHE"),
         ("301029.SZ", "301029.XSHE"),
+        ("302132.SZ", "302132.XSHE"),
     ];
     for (input, expected) in cases {
         assert_eq!(

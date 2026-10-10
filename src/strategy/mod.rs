@@ -5,6 +5,8 @@ mod elastic_rotation;
 mod low_turnover_trend;
 mod ma_cross;
 mod momentum_leader;
+mod online_model;
+mod pattern_rotation;
 mod rebound_rotation;
 use crate::engine::{BtContext, Order, OrderFailure};
 pub use adaptive_rotation::{AdaptiveRotation, AdaptiveRotationConfig};
@@ -15,6 +17,7 @@ pub use elastic_rotation::{ElasticRotation, ElasticRotationConfig};
 pub use low_turnover_trend::{LowTurnoverTrend, LowTurnoverTrendConfig};
 pub use ma_cross::{MaCross, MaCrossConfig};
 pub use momentum_leader::{MomentumLeader, MomentumLeaderConfig};
+pub use pattern_rotation::{Pattern, PatternRotation, PatternRotationConfig, TrendRank};
 pub use rebound_rotation::{ReboundRotation, ReboundRotationConfig};
 
 #[derive(Subcommand, Clone, Debug)]
@@ -47,6 +50,9 @@ pub enum StrategyConfig {
     /// 低成交额与短线回落综合排名，趋势关闭时清仓
     #[command(alias = "rebound_rotation")]
     ReboundRotation(ReboundRotationConfig),
+    /// 放量突破研究策略，也支持回撤、RSI、波动收缩和滚动学习模式
+    #[command(alias = "volume-breakout")]
+    PatternRotation(PatternRotationConfig),
 }
 
 impl StrategyConfig {
@@ -60,6 +66,7 @@ impl StrategyConfig {
             Self::MomentumLeader(config) => Box::new(MomentumLeader::new(config)),
             Self::ElasticRotation(config) => Box::new(ElasticRotation::new(config)),
             Self::ReboundRotation(config) => Box::new(ReboundRotation::new(config)),
+            Self::PatternRotation(config) => Box::new(PatternRotation::new(config)),
         }
     }
 }

@@ -35,6 +35,7 @@ CLI 使用 Tushare 数据源，需要具备所调用接口的访问权限。数�
 | `low-turnover-trend` | 从历史指数成分中按低成交额选股，用观察池趋势中位数控制新增买入预算。     | [LowTurnoverTrend](src/strategy/low_turnover_trend.rs) |
 | `adaptive-rotation`  | 低成交额池内结合低价与反转排名，保留排名缓冲，观察池趋势恶化时清仓。     | [AdaptiveRotation](src/strategy/adaptive_rotation.rs)  |
 | `rebound-rotation` | 低成交额与 3 日回落综合排名，20 日趋势控制进出；默认集中持有 1 只。 | [ReboundRotation](src/strategy/rebound_rotation.rs) |
+| `volume-breakout` | 历史创业板成分内按放量突破入场，市场广度及价格趋势控制退出。 | [PatternRotation](src/strategy/pattern_rotation.rs) |
 
 地量策略只卖出落选股票、买入新增股票，保留交集不再平衡。**进攻／防御比例控制新增买入使用的现金，不是组合总仓位目标**；名单不变时，趋势切换不会触发减仓。合格观察池不足时跳过当天信号，保留持仓。
 
@@ -44,6 +45,12 @@ CLI 使用 Tushare 数据源，需要具备所调用接口的访问权限。数�
 
 ```bash
 cargo run --release -- bt --start 20260101 --end 20261009 rebound-rotation
+```
+
+放量突破研究候选 `volume-breakout` 使用同一参数，在 2025、2026（至 10 月 9 日）独立账户中分别获得 **133.94%、115.85%**；从 2025 年连续运行的年度收益为 **133.94%、151.71%**。但 2020–2026 最大回撤达 **59.22%**，且对参数敏感，**不能称为稳定盈利策略**。规则、完整历史、费用及参数敏感性见 [研究说明](docs/volume_breakout.md)。
+
+```bash
+cargo run --release -- bt --start 20260101 --end 20261009 volume-breakout
 ```
 
 ## 报告
