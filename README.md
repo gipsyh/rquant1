@@ -34,10 +34,17 @@ CLI 使用 Tushare 数据源，需要具备所调用接口的访问权限。数�
 | `ma-cross`           | 短均线上穿买入、下穿清仓；从回测开始积累历史，初始多头排列不会直接买入。 | [MaCross](src/strategy/ma_cross.rs)                    |
 | `low-turnover-trend` | 从历史指数成分中按低成交额选股，用观察池趋势中位数控制新增买入预算。     | [LowTurnoverTrend](src/strategy/low_turnover_trend.rs) |
 | `adaptive-rotation`  | 低成交额池内结合低价与反转排名，保留排名缓冲，观察池趋势恶化时清仓。     | [AdaptiveRotation](src/strategy/adaptive_rotation.rs)  |
+| `rebound-rotation` | 低成交额与 3 日回落综合排名，20 日趋势控制进出；默认集中持有 1 只。 | [ReboundRotation](src/strategy/rebound_rotation.rs) |
 
 地量策略只卖出落选股票、买入新增股票，保留交集不再平衡。**进攻／防御比例控制新增买入使用的现金，不是组合总仓位目标**；名单不变时，趋势切换不会触发减仓。合格观察池不足时跳过当天信号，保留持仓。
 
 自适应轮动默认在 20 只低成交额候选中持有 6 只，风险观察池为 100 只；5 日趋势中位数超过 0.5% 时进场、低于 0 时清仓。`--max-trend` 可选启用过热退出，默认关闭。2020-01-01 至 2026-09-28 的默认配置实测夏普为 **2.3442**，未达到 3；策略规则、分期结果和研究限制见 [策略说明](docs/adaptive_rotation.md)。
+
+短线反转策略 `rebound-rotation` 的 2026-01-01 至 2026-10-09 独立回测收益为 **55.86%**、最大回撤 **12.58%**；2020–2026 连续回测累计收益 **446.26%**、最大回撤 **26.77%**。**未达到 2026 年 100% 收益目标**。参数经过历史筛选，默认单股持仓，结果不代表样本外收益；逐年结果、敏感性与复现命令见 [策略说明](docs/rebound_rotation.md)。
+
+```bash
+cargo run --release -- bt --start 20260101 --end 20261009 rebound-rotation
+```
 
 ## 报告
 

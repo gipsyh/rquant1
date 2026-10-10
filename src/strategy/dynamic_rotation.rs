@@ -539,7 +539,9 @@ impl Strategy for DynamicRotation {
         self.latest_selection = selection;
         if old_regime != self.risk_on
             || self.retry_orders
-            || self.day_number.saturating_sub(self.last_rebalance.unwrap_or(0))
+            || self
+                .day_number
+                .saturating_sub(self.last_rebalance.unwrap_or(0))
                 >= self.config.rebalance_days
         {
             self.last_rebalance = Some(self.day_number);

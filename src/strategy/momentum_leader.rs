@@ -435,13 +435,41 @@ mod test {
             ..Default::default()
         });
         let cands = vec![
-            Candidate { symbol: sym("000001.SZ"), momentum: 0.50, avg_turnover: 1e8 },
-            Candidate { symbol: sym("000002.SZ"), momentum: 0.40, avg_turnover: 1e8 },
-            Candidate { symbol: sym("000003.SZ"), momentum: 0.30, avg_turnover: 1e8 },
-            Candidate { symbol: sym("000004.SZ"), momentum: 0.25, avg_turnover: 1e8 },
-            Candidate { symbol: sym("000005.SZ"), momentum: 0.20, avg_turnover: 1e8 },
-            Candidate { symbol: sym("000006.SZ"), momentum: 0.15, avg_turnover: 1e8 },
-            Candidate { symbol: sym("000007.SZ"), momentum: 0.10, avg_turnover: 1e8 },
+            Candidate {
+                symbol: sym("000001.SZ"),
+                momentum: 0.50,
+                avg_turnover: 1e8,
+            },
+            Candidate {
+                symbol: sym("000002.SZ"),
+                momentum: 0.40,
+                avg_turnover: 1e8,
+            },
+            Candidate {
+                symbol: sym("000003.SZ"),
+                momentum: 0.30,
+                avg_turnover: 1e8,
+            },
+            Candidate {
+                symbol: sym("000004.SZ"),
+                momentum: 0.25,
+                avg_turnover: 1e8,
+            },
+            Candidate {
+                symbol: sym("000005.SZ"),
+                momentum: 0.20,
+                avg_turnover: 1e8,
+            },
+            Candidate {
+                symbol: sym("000006.SZ"),
+                momentum: 0.15,
+                avg_turnover: 1e8,
+            },
+            Candidate {
+                symbol: sym("000007.SZ"),
+                momentum: 0.10,
+                avg_turnover: 1e8,
+            },
         ];
         // Suppose held contains 000004.SZ (rank 3 < top_k * 2 = 6) and 000007.SZ (rank 6, not < 6)
         let mut held = BTreeSet::new();
