@@ -1,6 +1,7 @@
 mod adaptive_rotation;
 mod buy_and_hold;
 mod dynamic_rotation;
+mod elastic_rotation;
 mod low_turnover_trend;
 mod ma_cross;
 mod momentum_leader;
@@ -9,6 +10,7 @@ pub use adaptive_rotation::{AdaptiveRotation, AdaptiveRotationConfig};
 pub use buy_and_hold::{BuyAndHold, BuyAndHoldConfig};
 use clap::Subcommand;
 pub use dynamic_rotation::{DynamicRotation, DynamicRotationConfig};
+pub use elastic_rotation::{ElasticRotation, ElasticRotationConfig};
 pub use low_turnover_trend::{LowTurnoverTrend, LowTurnoverTrendConfig};
 pub use ma_cross::{MaCross, MaCrossConfig};
 pub use momentum_leader::{MomentumLeader, MomentumLeaderConfig};
@@ -31,8 +33,15 @@ pub enum StrategyConfig {
     #[command(alias = "dynamic_rotation")]
     DynamicRotation(DynamicRotationConfig),
     /// 动量龙头轮动策略，聚焦高成交额与中期动量领涨龙头
-    #[command(alias = "momentum_leader", alias = "leader-rotation", alias = "leader_rotation")]
+    #[command(
+        alias = "momentum_leader",
+        alias = "leader-rotation",
+        alias = "leader_rotation"
+    )]
     MomentumLeader(MomentumLeaderConfig),
+    /// 弹性地量轮动，低成交额与高价格弹性综合排名并满仓部署
+    #[command(alias = "elastic_rotation")]
+    ElasticRotation(ElasticRotationConfig),
 }
 
 impl StrategyConfig {
@@ -44,6 +53,7 @@ impl StrategyConfig {
             Self::AdaptiveRotation(config) => Box::new(AdaptiveRotation::new(config)),
             Self::DynamicRotation(config) => Box::new(DynamicRotation::new(config)),
             Self::MomentumLeader(config) => Box::new(MomentumLeader::new(config)),
+            Self::ElasticRotation(config) => Box::new(ElasticRotation::new(config)),
         }
     }
 }
