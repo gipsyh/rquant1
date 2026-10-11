@@ -35,7 +35,7 @@ impl Account {
 enum Intent {
     BuyLimit { shares: u64, price: f64 },
     BuyAmount { cash: f64 },
-    SellLimit { shares: u64, price: f64 },
+    Sell { shares: u64, price: Option<f64> },
     SellAll,
 }
 
@@ -125,14 +125,14 @@ impl BacktestEngine {
                     symbol: *symbol,
                     intent: Intent::BuyAmount { cash: *cash_amount },
                 }),
-                Order::SellLimit {
+                Order::Sell {
                     symbol,
                     shares,
                     price,
                 } => legs.push(Leg {
                     order_index,
                     symbol: *symbol,
-                    intent: Intent::SellLimit {
+                    intent: Intent::Sell {
                         shares: *shares,
                         price: *price,
                     },
@@ -189,7 +189,7 @@ impl BacktestEngine {
             }
             let factor_check = if matches!(
                 leg.intent,
-                Intent::BuyLimit { .. } | Intent::SellLimit { .. }
+                Intent::BuyLimit { .. } | Intent::Sell { price: Some(_), .. }
             ) {
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     signal_bars.entry(leg.symbol)
@@ -244,7 +244,7 @@ impl BacktestEngine {
         fills.retain(|fill| {
             let symbol = fill.leg.symbol;
             let reason = match fill.leg.intent {
-                Intent::SellLimit { .. } | Intent::SellAll
+                Intent::Sell { .. } | Intent::SellAll
                     if sell_totals[&symbol]
                         > u128::from(account.sellable.get(&symbol).map_or(0, |p| p.0)) =>
                 {
@@ -422,12 +422,12 @@ impl BacktestEngine {
                 anyhow::ensure!(shares > 0, "金额不足以支付一手及佣金");
                 shares
             }
-            Intent::SellLimit { shares, price: ask } => {
-                anyhow::ensure!(
-                    shares > 0 && shares <= MAX_SHARES && ask.is_finite() && ask > 0.0,
-                    "卖出股数或限价无效"
-                );
-                anyhow::ensure!(ask <= price, "卖出限价高于开盘价");
+            Intent::Sell { shares, price: ask } => {
+                anyhow::ensure!(shares > 0 && shares <= MAX_SHARES, "卖出股数无效");
+                if let Some(ask) = ask {
+                    anyhow::ensure!(ask.is_finite() && ask > 0.0, "卖出限价无效");
+                    anyhow::ensure!(ask <= price, "卖出限价高于开盘价");
+                }
                 shares
             }
             Intent::SellAll => account.sellable.get(&leg.symbol).map_or(0, |p| p.0),
@@ -483,4 +483,99 @@ fn check_limit_factors(signal: Option<&StockBar>, execution: Option<&StockBar>) 
         "复权因子发生变化（{before} -> {after}），限价单失效"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use time::macros::date;
+
+    fn sample() -> (BacktestEngine, Account, StockBar, Leg) {
+        let symbol: StockSymbol = "000001.XSHE".parse().unwrap();
+        let mut account = Account::new(1000.0);
+        account.positions.insert(
+            symbol,
+            Position {
+                purchased_shares: 1000,
+                market_value: 10000.0,
+            },
+        );
+        account.units.insert(symbol, 1000.0);
+        account.start_day();
+        let bar = StockBar {
+            symbol,
+            date: date!(2024 - 01 - 03),
+            open: 5.0,
+            high: 5.1,
+            low: 4.9,
+            close: 5.0,
+            volume: 1e6,
+            turnover: 5e6,
+            limit_up: Some(5.5),
+            limit_down: Some(4.5),
+            float_market_cap: None,
+            adjustment: Some(Adjustment::Raw(2.0)),
+            st: false,
+            delisting: false,
+        };
+        let leg = Leg {
+            order_index: 0,
+            symbol,
+            intent: Intent::Sell {
+                shares: 400,
+                price: None,
+            },
+        };
+        (BacktestEngine::default(), account, bar, leg)
+    }
+
+    #[test]
+    fn partial_open_sale_uses_proportional_adjusted_units_and_real_fees() {
+        let (engine, account, bar, leg) = sample();
+        let (shares, units, price, notional, commission, stamp) =
+            engine.plan(&leg, Some(&bar), &account).unwrap();
+        assert_eq!(
+            (shares, units, price, notional, commission, stamp),
+            (400, 400.0, 5.0, 4000.0, 5.0, 2.0)
+        );
+    }
+
+    #[test]
+    fn partial_open_sale_preserves_t1_limit_down_and_missing_bar_rejections() {
+        let (engine, mut account, mut bar, leg) = sample();
+        assert!(engine.plan(&leg, None, &account).is_err());
+        bar.limit_down = Some(bar.open);
+        assert!(engine.plan(&leg, Some(&bar), &account).is_err());
+        bar.limit_down = Some(4.5);
+        account.sellable.clear();
+        assert!(engine.plan(&leg, Some(&bar), &account).is_err());
+    }
+
+    #[test]
+    fn partial_open_sale_rejects_zero_and_unrepresentable_quantities() {
+        let (engine, account, bar, mut leg) = sample();
+        for shares in [0, MAX_SHARES + 1] {
+            for price in [None, Some(5.0)] {
+                leg.intent = Intent::Sell { shares, price };
+                assert!(engine.plan(&leg, Some(&bar), &account).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn sell_optional_limit_controls_fill_without_changing_settlement() {
+        let (engine, account, bar, mut leg) = sample();
+        let unlimited = engine.plan(&leg, Some(&bar), &account).unwrap();
+        for price in [Some(4.9), Some(5.0)] {
+            leg.intent = Intent::Sell { shares: 400, price };
+            assert_eq!(engine.plan(&leg, Some(&bar), &account).unwrap(), unlimited);
+        }
+        for price in [5.1, 0.0, -1.0, f64::NAN, f64::INFINITY] {
+            leg.intent = Intent::Sell {
+                shares: 400,
+                price: Some(price),
+            };
+            assert!(engine.plan(&leg, Some(&bar), &account).is_err());
+        }
+    }
 }

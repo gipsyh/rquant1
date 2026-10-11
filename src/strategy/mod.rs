@@ -8,6 +8,7 @@ mod momentum_leader;
 mod online_model;
 mod pattern_rotation;
 mod rebound_rotation;
+mod strategy_momentum;
 use crate::engine::{BtContext, Order, OrderFailure};
 pub use adaptive_rotation::{AdaptiveRotation, AdaptiveRotationConfig};
 pub use buy_and_hold::{BuyAndHold, BuyAndHoldConfig};
@@ -19,6 +20,7 @@ pub use ma_cross::{MaCross, MaCrossConfig};
 pub use momentum_leader::{MomentumLeader, MomentumLeaderConfig};
 pub use pattern_rotation::{Pattern, PatternRotation, PatternRotationConfig, TrendRank};
 pub use rebound_rotation::{ReboundRotation, ReboundRotationConfig};
+pub use strategy_momentum::{StrategyMomentum, StrategyMomentumConfig};
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum StrategyConfig {
@@ -53,6 +55,8 @@ pub enum StrategyConfig {
     /// 放量突破研究策略，也支持回撤、RSI、波动收缩和滚动学习模式
     #[command(alias = "volume-breakout")]
     PatternRotation(PatternRotationConfig),
+    /// 根据历史模拟账户的近期表现，在反转与突破策略之间配置资金（研究模式）
+    StrategyMomentum(StrategyMomentumConfig),
 }
 
 impl StrategyConfig {
@@ -67,6 +71,7 @@ impl StrategyConfig {
             Self::ElasticRotation(config) => Box::new(ElasticRotation::new(config)),
             Self::ReboundRotation(config) => Box::new(ReboundRotation::new(config)),
             Self::PatternRotation(config) => Box::new(PatternRotation::new(config)),
+            Self::StrategyMomentum(config) => Box::new(StrategyMomentum::new(config)),
         }
     }
 }

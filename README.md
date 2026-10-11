@@ -34,8 +34,9 @@ CLI 使用 Tushare 数据源，需要具备所调用接口的访问权限。数�
 | `ma-cross`           | 短均线上穿买入、下穿清仓；从回测开始积累历史，初始多头排列不会直接买入。 | [MaCross](src/strategy/ma_cross.rs)                    |
 | `low-turnover-trend` | 从历史指数成分中按低成交额选股，用观察池趋势中位数控制新增买入预算。     | [LowTurnoverTrend](src/strategy/low_turnover_trend.rs) |
 | `adaptive-rotation`  | 低成交额池内结合低价与反转排名，保留排名缓冲，观察池趋势恶化时清仓。     | [AdaptiveRotation](src/strategy/adaptive_rotation.rs)  |
-| `rebound-rotation` | 低成交额与 3 日回落综合排名，20 日趋势控制进出；默认集中持有 1 只。 | [ReboundRotation](src/strategy/rebound_rotation.rs) |
-| `volume-breakout` | 历史创业板成分内按放量突破入场，市场广度及价格趋势控制退出。 | [PatternRotation](src/strategy/pattern_rotation.rs) |
+| `rebound-rotation`   | 低成交额与 3 日回落综合排名，20 日趋势控制进出；默认集中持有 1 只。      | [ReboundRotation](src/strategy/rebound_rotation.rs)    |
+| `volume-breakout`    | 历史创业板成分内按放量突破入场，市场广度及价格趋势控制退出。             | [PatternRotation](src/strategy/pattern_rotation.rs)    |
+| `strategy-momentum`  | 根据两个参考策略的历史表现动态配置，读取因果模拟账户报告。               | [StrategyMomentum](src/strategy/strategy_momentum.rs)  |
 
 地量策略只卖出落选股票、买入新增股票，保留交集不再平衡。**进攻／防御比例控制新增买入使用的现金，不是组合总仓位目标**；名单不变时，趋势切换不会触发减仓。合格观察池不足时跳过当天信号，保留持仓。
 

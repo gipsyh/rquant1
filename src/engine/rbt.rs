@@ -48,7 +48,7 @@ impl BacktestEngine {
                         match order {
                             Order::BuyLimit { symbol, .. }
                             | Order::BuyAmount { symbol, .. }
-                            | Order::SellLimit { symbol, .. }
+                            | Order::Sell { symbol, .. }
                             | Order::SellAll { symbol } => {
                                 symbols.insert(*symbol);
                             }

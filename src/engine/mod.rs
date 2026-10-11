@@ -191,12 +191,14 @@ pub enum Order {
         symbol: StockSymbol,
         cash_amount: f64,
     },
-    /// 精确股数；限价 <= 次日开盘价才成交，不做部分成交。
-    /// 信号日与执行日复权因子必须相同，否则原始限价失效。
-    SellLimit {
+    /// 按次日开盘价卖出指定买入股数，不做部分成交，遵守 T+1。
+    /// price 为 None 时不限价；Some(限价) 时要求限价 <= 开盘价，
+    /// 且信号日与执行日复权因子相同，否则原始限价失效。
+    /// 复权模式按对应收益单位结算；此开盘成交模型不保证实盘成交。
+    Sell {
         symbol: StockSymbol,
         shares: u64,
-        price: f64,
+        price: Option<f64>,
     },
     /// 按次日开盘价卖出全部可卖持仓；当天新买入部分受 T+1 限制。
     SellAll { symbol: StockSymbol },
